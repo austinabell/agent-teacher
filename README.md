@@ -5,10 +5,10 @@ It is off by default and you turn it on per session. While it is on:
 
 1. **Predict first.** Before a non-trivial design decision, the agent asks you to pick an option, then reveals its choice and the reason.
 2. **Decision cards.** The agent logs every notable decision as a quiz card, including the ones it did not ask you about.
-3. **Write it yourself.** When a small piece of code is educational (the core logic behind a decision, a failure path, a bug fix) or fun (a parser, a clever algorithm), the agent prepares a stub with a `TODO` and asks you to write it. It then reviews your code and runs the tests. The idea comes from Anthropic's [learning-output-style](https://github.com/anthropics/claude-code/tree/main/plugins/learning-output-style) plugin.
+3. **Write it yourself.** The agent stubs core logic (functions with real decisions in them: algorithms, parsing, business rules, failure paths) with a `TODO` and pauses for you to write it, one component at a time. It writes the glue and boilerplate itself, then reviews your code and runs the tests. How much it hands off depends on a hands-on level from 0 to 4, starting at 3. The idea comes from Anthropic's [learning-output-style](https://github.com/anthropics/claude-code/tree/main/plugins/learning-output-style) plugin.
 4. **Review every few commits.** After 3 commits (yours or the agent's), the agent quizzes you on the cards that are due. Cards come back on a spaced-repetition schedule.
 
-You can skip any part at any time. A predict-first question always offers "Skip, just decide", and a hand-off always offers "Skip, you write it". If you skip two hand-offs in a row, the agent stops offering them for a while. A review can be snoozed, and snoozed cards stay due for the next one.
+You can skip any part at any time. A predict-first question always offers "Skip, just decide", and a hand-off always offers "Skip, you write it". Each skipped hand-off lowers the hands-on level by one, and each wrong review answer raises it by one. The level is stored per project in `.agent-quiz/state.json`, and `quiz status` shows it. A review can be snoozed, and snoozed cards stay due for the next one.
 
 Works with Claude Code, Codex, and opencode. All three share one core (`core/quiz.ts`).
 

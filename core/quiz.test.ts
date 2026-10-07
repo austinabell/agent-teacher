@@ -6,12 +6,14 @@ import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   addCard,
+  adjustHandsOn,
   type Card,
   config,
   dueCards,
   grade,
   handleStop,
   handleUserPrompt,
+  handsOn,
   isOn,
   markReviewed,
   parseCommand,
@@ -180,6 +182,75 @@ describe("grade", () => {
   });
 });
 
+describe("hands-on level", () => {
+  const now = new Date("2026-01-01T00:00:00Z");
+
+  it("defaults to 3", () => {
+    expect(handsOn(repo)).toBe(3);
+  });
+
+  it("steps down on skips and stops at 0", () => {
+    expect([1, 2, 3, 4].map(() => adjustHandsOn(repo, "skipped"))).toEqual([2, 1, 0, 0]);
+    expect(readState(repo).handsOn).toBe(0);
+  });
+
+  it("steps up on wrong answers and stops at 4", () => {
+    expect([1, 2].map(() => adjustHandsOn(repo, "wrong"))).toEqual([4, 4]);
+  });
+
+  it("stays put when the user writes the code", () => {
+    adjustHandsOn(repo, "skipped");
+    expect(adjustHandsOn(repo, "wrote")).toBe(2);
+  });
+
+  it("rejects unknown events without changing the level", () => {
+    expect(() => adjustHandsOn(repo, "maybe")).toThrow(/skipped, wrote, or wrong/);
+    expect(() => adjustHandsOn(repo, "toString")).toThrow(/skipped, wrote, or wrong/);
+    expect(handsOn(repo)).toBe(3);
+  });
+
+  it.each([
+    [9, 4],
+    [-2, 0],
+    [1.5, 3],
+    ["2", 3],
+    [null, 3],
+  ])("reads a hand-edited level %j as %i", (stored, expected) => {
+    fs.mkdirSync(path.join(repo, ".agent-quiz"), { recursive: true });
+    fs.writeFileSync(
+      path.join(repo, ".agent-quiz", "state.json"),
+      JSON.stringify({ handsOn: stored }),
+    );
+    expect(handsOn(repo)).toBe(expected);
+  });
+
+  it("keeps the review baseline when it changes", () => {
+    commit();
+    markReviewed(repo);
+    const before = readState(repo).lastReviewSha;
+    adjustHandsOn(repo, "skipped");
+    expect(readState(repo).lastReviewSha).toBe(before);
+  });
+
+  it("rises when a review answer is graded wrong, not right or skip", () => {
+    addCard(repo, { question: "q", answer: "a" }, now);
+    grade(repo, "1", "right", undefined, now);
+    grade(repo, "1", "skip", undefined, now);
+    expect(handsOn(repo)).toBe(3);
+    grade(repo, "1", "wrong", undefined, now);
+    expect(handsOn(repo)).toBe(4);
+  });
+
+  it("shows up in status and in the quiz-on message", () => {
+    adjustHandsOn(repo, "skipped");
+    const on = handleUserPrompt({ sessionId: "s1", prompt: "quiz on", cwd: repo });
+    expect(on).toMatch(/Hands-on level 2\/4: Offer one hand-off per component/);
+    expect(on).toMatch(/## 0\. Precedence/);
+    const status = handleUserPrompt({ sessionId: "s1", prompt: "quiz status", cwd: repo });
+    expect(status).toMatch(/Hands-on level: 2\/4/);
+  });
+});
+
 describe("dueCards", () => {
   it("returns only due cards, lowest box then oldest first, up to the limit", () => {
     const now = new Date("2026-06-01T00:00:00Z");
@@ -208,13 +279,15 @@ describe("handleUserPrompt", () => {
     const on = prompt("quiz on");
     expect(on).toMatch(/now ON/);
     expect(on).toMatch(/Predict first/);
-    expect(on).toMatch(/Hand off code worth writing by hand/);
+    expect(on).toMatch(/Hand off core logic for the user to write/);
     expect(on).not.toMatch(/\{\{CLI\}\}/);
     expect(isOn(repo, "s1")).toBe(true);
     expect(readState(repo).lastReviewSha).toBe(git("rev-parse", "HEAD"));
     const reminder = prompt("fix the bug");
     expect(reminder).toMatch(/Quiz mode is ON/);
-    expect(reminder).toMatch(/write by hand/);
+    expect(reminder).toMatch(/Hands-on level 3\/4: Hand off most core logic/);
+    expect(reminder).toMatch(/takes precedence/);
+    expect(reminder).toMatch(/handoff wrote\|skipped/);
   });
 
   it("keeps sessions independent", () => {
@@ -425,6 +498,15 @@ describe("CLI", () => {
     expect(cli(["grade", "1", "right", "high"]).stdout).toMatch(/box 2/);
     expect(cli(["due"]).stdout).toMatch(/nothing due/);
     expect(cli(["reviewed"]).status).toBe(0);
+  });
+
+  it("records hand-off answers", () => {
+    expect(cli(["handoff", "skipped"]).stdout).toMatch(/hands-on level 2\/4/);
+    expect(cli(["handoff", "wrote"]).stdout).toMatch(/hands-on level 2\/4/);
+    const bad = cli(["handoff", "wrong"]);
+    expect(bad.status).toBe(1);
+    expect(bad.stderr).toMatch(/usage: handoff wrote\|skipped/);
+    expect(cli(["handoff"]).status).toBe(1);
   });
 
   it("exits non-zero on bad input to non-hook commands", () => {

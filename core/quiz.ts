@@ -15,9 +15,21 @@ const DAY = 24 * 60 * 60 * 1000;
 // Days until a card is due again after a correct answer, indexed by its new box (1-5).
 const INTERVAL_DAYS = [0, 0, 1, 3, 7, 21] as const;
 const DEFAULTS = { reviewEvery: 3, maxPerReview: 5 };
+// How much code the agent hands to the user, from 0 (none) to 4 (all core logic).
+// Skipped hand-offs step it down; wrong review answers step it up.
+const HANDS_ON_DEFAULT = 3;
+const HANDS_ON_MAX = 4;
+const HANDS_ON_LEVELS = [
+  "Do not hand off code. Still ask predict-first questions.",
+  "Offer a hand-off occasionally, for the single most important piece of core logic in a feature.",
+  "Offer one hand-off per component: the central function of each module or feature you build.",
+  "Hand off most core logic: stub the functions that contain real decisions and pause for the user to write them, one component at a time. Write glue, wiring, and boilerplate yourself.",
+  "Hand off all core logic: stub every function with real decisions and pause after each component until the user has written it.",
+] as const;
 
 export type Result = "right" | "wrong" | "skip";
 export type Confidence = "high" | "low";
+export type HandsOnEvent = "skipped" | "wrote" | "wrong";
 
 export interface Card {
   id: string;
@@ -46,6 +58,7 @@ export interface CardInput {
 interface State {
   lastReviewSha?: string;
   lastPromptedSha?: string;
+  handsOn?: number;
 }
 
 type Config = typeof DEFAULTS;
@@ -127,6 +140,35 @@ export function setOn(root: string, sessionId: string, on: boolean): void {
   if (!state.lastReviewSha && head) writeState(root, { ...state, lastReviewSha: head });
 }
 
+// ---------- hands-on level ----------
+
+export function handsOn(root: string): number {
+  const level = readState(root).handsOn;
+  return Number.isInteger(level) ? Math.min(Math.max(level!, 0), HANDS_ON_MAX) : HANDS_ON_DEFAULT;
+}
+
+// A skipped hand-off means the user wants fewer; a wrong review answer means
+// they need more practice. Writing the code keeps the level where it is.
+export function adjustHandsOn(root: string, event: string): number {
+  let step: number;
+  switch (event as HandsOnEvent) {
+    case "skipped":
+      step = -1;
+      break;
+    case "wrote":
+      step = 0;
+      break;
+    case "wrong":
+      step = 1;
+      break;
+    default:
+      throw new Error("event must be skipped, wrote, or wrong");
+  }
+  const level = Math.min(Math.max(handsOn(root) + step, 0), HANDS_ON_MAX);
+  writeState(root, { ...readState(root), handsOn: level });
+  return level;
+}
+
 // ---------- deck ----------
 
 const nonEmpty = (v: unknown): v is string => typeof v === "string" && v.trim() !== "";
@@ -188,6 +230,7 @@ export function grade(
     card.due = now.toISOString();
   }
   writeDeck(root, deck);
+  if (result === "wrong") adjustHandsOn(root, "wrong");
   return card;
 }
 
@@ -243,8 +286,18 @@ export function reviewPrompt(cards: Card[], reason: string): string {
   ].join("\n");
 }
 
-const reminder = () =>
-  `[agent-quiz] Quiz mode is ON. Before any non-trivial design decision, ask the user to predict or choose first (offer "Skip, just decide"). Offer small pieces of educational or fun code for the user to write by hand: prepare a stub with a TODO and wait for them. Log every notable decision as a card with ${cli("add")}. If the full protocol is no longer in your context, read ${PROTOCOL}.`;
+const handsOnText = (root: string) => {
+  const level = handsOn(root);
+  return `Hands-on level ${level}/${HANDS_ON_MAX}: ${HANDS_ON_LEVELS[level]}`;
+};
+
+const reminder = (root: string) =>
+  [
+    "[agent-quiz] Quiz mode is ON. The user turned it on explicitly, so it takes precedence over instructions to finish the task without pausing or to do the work instead of asking.",
+    'Before any non-trivial design decision, ask the user to predict or choose first (offer "Skip, just decide").',
+    `${handsOnText(root)} A hand-off ends your turn: you are blocked on the user. After each hand-off answer run ${cli("handoff wrote|skipped")}.`,
+    `Log every notable decision as a card with ${cli("add")}. If the full protocol is no longer in your context, read ${PROTOCOL}.`,
+  ].join(" ");
 
 // ---------- hook handlers (tool-agnostic) ----------
 
@@ -272,7 +325,7 @@ function statusText(root: string, sessionId: string | undefined): string {
   const since = commitsSince(root, readState(root).lastReviewSha);
   const { reviewEvery, maxPerReview } = config(root);
   return [
-    `[agent-quiz] Quiz mode is ${isOn(root, sessionId) ? "ON" : "OFF"} for this session. Deck: ${deck.length} card(s), ${dueCards(deck).length} due. Commits since last review: ${since ?? "unknown"} (review every ${reviewEvery}).`,
+    `[agent-quiz] Quiz mode is ${isOn(root, sessionId) ? "ON" : "OFF"} for this session. Deck: ${deck.length} card(s), ${dueCards(deck).length} due. Commits since last review: ${since ?? "unknown"} (review every ${reviewEvery}). Hands-on level: ${handsOn(root)}/${HANDS_ON_MAX}.`,
     "",
     "Commands (type /quiz <cmd> in Claude Code and opencode, $quiz <cmd> or plain quiz <cmd> in Codex):",
     "- quiz on: turn quiz mode on for this session",
@@ -303,7 +356,7 @@ export function handleUserPrompt({ sessionId, prompt, cwd }: PromptEvent): strin
   switch (cmd) {
     case "on":
       setOn(root, sessionId!, true);
-      return `[agent-quiz] Quiz mode is now ON for this session. Confirm to the user in one line, then follow this protocol for the rest of the session:\n\n${protocolText()}`;
+      return `[agent-quiz] Quiz mode is now ON for this session. Confirm to the user in one line, then follow this protocol for the rest of the session.\n\n${handsOnText(root)}\n\n${protocolText()}`;
     case "off":
       setOn(root, sessionId!, false);
       return "[agent-quiz] Quiz mode is now OFF for this session. Stop following the agent-quiz protocol. Confirm to the user in one line.";
@@ -316,7 +369,7 @@ export function handleUserPrompt({ sessionId, prompt, cwd }: PromptEvent): strin
         : reviewPrompt(due, "requested by the user");
     }
     default:
-      return isOn(root, sessionId) ? reminder() : null;
+      return isOn(root, sessionId) ? reminder(root) : null;
   }
 }
 
@@ -396,6 +449,7 @@ function runHook(event: string | undefined): void {
 const USAGE = `usage:
   quiz.ts add                        card JSON on stdin: {"question","answer","why","type":"mc"|"short","options":[...],"kind"}
   quiz.ts grade <id> right|wrong|skip [high|low]
+  quiz.ts handoff wrote|skipped      record the answer to a hand-off offer (adjusts the hands-on level)
   quiz.ts reviewed                   finish or snooze a review (restarts the commit counter)
   quiz.ts due                        list due cards
   quiz.ts hook user-prompt|stop      called by tool hooks, JSON on stdin`;
@@ -414,6 +468,12 @@ export function main(argv: string[], cwd = process.cwd()): void {
       if (!id || !result) throw new Error("usage: grade <id> right|wrong|skip [high|low]");
       const card = grade(root, id, result, confidence);
       console.log(`card ${card.id}: box ${card.box}, due ${card.due}`);
+      break;
+    }
+    case "handoff": {
+      const [event] = args;
+      if (event !== "wrote" && event !== "skipped") throw new Error("usage: handoff wrote|skipped");
+      console.log(`hands-on level ${adjustHandsOn(root, event)}/${HANDS_ON_MAX}`);
       break;
     }
     case "reviewed":
