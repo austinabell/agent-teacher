@@ -1,0 +1,27 @@
+{
+  "description": "agent-quiz: toggle handling, quiz-mode reminders, and commit-triggered reviews",
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/core/quiz.ts\" hook user-prompt",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/core/quiz.ts\" hook stop",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

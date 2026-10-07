@@ -1,0 +1,14 @@
+{
+  "name": "agent-quiz",
+  "description": "Quiz mode for agent-made design decisions.",
+  "owner": {
+    "name": "austinabell"
+  },
+  "plugins": [
+    {
+      "name": "agent-quiz",
+      "source": "./",
+      "description": "Per-session quiz mode for design decisions made by the agent."
+    }
+  ]
+}

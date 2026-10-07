@@ -1,0 +1,9 @@
+{
+  "name": "agent-quiz",
+  "displayName": "Agent Quiz",
+  "version": "0.1.0",
+  "description": "Per-session quiz mode: predict design decisions before the agent makes them, then review them with spaced repetition every few commits.",
+  "author": { "name": "austinabell" },
+  "license": "MIT",
+  "keywords": ["learning", "quiz", "spaced-repetition", "review"]
+}

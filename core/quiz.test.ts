@@ -1,0 +1,422 @@
+import { execFileSync, spawnSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { beforeEach, describe, expect, it } from "vitest";
+import {
+  addCard,
+  type Card,
+  config,
+  dueCards,
+  grade,
+  handleStop,
+  handleUserPrompt,
+  isOn,
+  markReviewed,
+  parseCommand,
+  readDeck,
+  readState,
+} from "./quiz.ts";
+
+const SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), "quiz.ts");
+const DAY = 24 * 60 * 60 * 1000;
+const GIT_ENV = {
+  ...process.env,
+  GIT_AUTHOR_NAME: "t",
+  GIT_AUTHOR_EMAIL: "t@t",
+  GIT_COMMITTER_NAME: "t",
+  GIT_COMMITTER_EMAIL: "t@t",
+};
+
+let repo: string;
+
+function git(...args: string[]): string {
+  return execFileSync("git", args, { cwd: repo, env: GIT_ENV, encoding: "utf8" }).trim();
+}
+
+function commit(n = 1): void {
+  for (let i = 0; i < n; i++) git("commit", "--allow-empty", "-q", "-m", `c${Math.random()}`);
+}
+
+function tmpDir(): string {
+  return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agent-quiz-")));
+}
+
+const card = (over: Partial<Card> = {}): Card => ({
+  id: "1",
+  type: "short",
+  question: "q",
+  answer: "a",
+  why: "",
+  kind: "decision",
+  commit: null,
+  created: new Date(0).toISOString(),
+  box: 1,
+  due: new Date(0).toISOString(),
+  history: [],
+  ...over,
+});
+
+beforeEach(() => {
+  repo = tmpDir();
+  git("init", "-q");
+  commit();
+});
+
+describe("parseCommand", () => {
+  it.each([
+    ["quiz on", "on"],
+    ["/quiz off", "off"],
+    ["$quiz status", "status"],
+    ["/agent-quiz:quiz review", "review"],
+    ["  QUIZ ON  ", "on"],
+    ["/quiz", "status"],
+    ["quiz", "status"],
+    [
+      "<command-name>/agent-quiz:quiz</command-name>\n<command-message>quiz</command-message>\n<command-args>on</command-args>",
+      "on",
+    ],
+    ["<command-name>/quiz</command-name>", "status"],
+  ])("%j -> %s", (prompt, expected) => {
+    expect(parseCommand(prompt)).toBe(expected);
+  });
+
+  it.each([
+    "quiz me about the parser",
+    "quiz onx",
+    "quiz bogus",
+    "please quiz on",
+    "",
+    undefined,
+    "/quizzes on",
+  ])("%j -> null", (prompt) => {
+    expect(parseCommand(prompt)).toBeNull();
+  });
+});
+
+describe("addCard", () => {
+  it("assigns increasing ids and records the commit", () => {
+    const a = addCard(repo, { question: "q1", answer: "a1" });
+    const b = addCard(repo, {
+      question: "q2",
+      answer: "a2",
+      why: " because ",
+      options: ["x", "y"],
+    });
+    expect([a.id, b.id]).toEqual(["1", "2"]);
+    expect(a.type).toBe("short");
+    expect(b.type).toBe("mc");
+    expect(b.why).toBe("because");
+    expect(a.commit).toBe(git("rev-parse", "--short", "HEAD"));
+    expect(readDeck(repo)).toHaveLength(2);
+  });
+
+  it("makes new cards due immediately in box 1", () => {
+    const now = new Date("2026-01-01T00:00:00Z");
+    const c = addCard(repo, { question: "q", answer: "a" }, now);
+    expect(c.box).toBe(1);
+    expect(c.due).toBe(now.toISOString());
+  });
+
+  it.each([
+    [{ answer: "a" }, /question/],
+    [{ question: "  ", answer: "a" }, /question/],
+    [{ question: "q" }, /answer/],
+    [{ question: "q", answer: "a", type: "essay" }, /type/],
+    [{ question: "q", answer: "a", type: "mc" }, /options/],
+    [{ question: "q", answer: "a", options: ["only"] }, /options/],
+    [{ question: "q", answer: "a", options: ["x", ""] }, /options/],
+  ])("rejects %j", (input, message) => {
+    expect(() => addCard(repo, input)).toThrow(message);
+    expect(readDeck(repo)).toEqual([]);
+  });
+
+  it("creates a self-ignoring state directory", () => {
+    addCard(repo, { question: "q", answer: "a" });
+    expect(fs.readFileSync(path.join(repo, ".agent-quiz", ".gitignore"), "utf8")).toBe("*\n");
+    expect(git("status", "--porcelain")).toBe("");
+  });
+});
+
+describe("grade", () => {
+  const now = new Date("2026-01-01T00:00:00Z");
+
+  it("moves a right answer up one box with a growing interval", () => {
+    addCard(repo, { question: "q", answer: "a" }, now);
+    const expectedDays = [1, 3, 7, 21, 21];
+    for (const days of expectedDays) {
+      const c = grade(repo, "1", "right", "high", now);
+      expect(Date.parse(c.due) - now.getTime()).toBe(days * DAY);
+    }
+    expect(readDeck(repo)[0]!.box).toBe(5);
+  });
+
+  it("sends a wrong answer back to box 1, due now", () => {
+    addCard(repo, { question: "q", answer: "a" }, now);
+    grade(repo, "1", "right", undefined, now);
+    grade(repo, "1", "right", undefined, now);
+    const c = grade(repo, "1", "wrong", "high", now);
+    expect(c.box).toBe(1);
+    expect(c.due).toBe(now.toISOString());
+    expect(c.history.map((h) => h.result)).toEqual(["right", "right", "wrong"]);
+    expect(c.history[2]!.confidence).toBe("high");
+  });
+
+  it("leaves box and due unchanged on skip but records it", () => {
+    const before = addCard(repo, { question: "q", answer: "a" }, now);
+    const c = grade(repo, "1", "skip", undefined, new Date(now.getTime() + DAY));
+    expect([c.box, c.due]).toEqual([before.box, before.due]);
+    expect(c.history).toHaveLength(1);
+  });
+
+  it.each([
+    ["1", "maybe", undefined, /result/],
+    ["1", "right", "very", /confidence/],
+    ["99", "right", undefined, /no card/],
+  ])("rejects grade(%s, %s, %s)", (id, result, confidence, message) => {
+    addCard(repo, { question: "q", answer: "a" });
+    expect(() => grade(repo, id, result, confidence)).toThrow(message);
+  });
+});
+
+describe("dueCards", () => {
+  it("returns only due cards, lowest box then oldest first, up to the limit", () => {
+    const now = new Date("2026-06-01T00:00:00Z");
+    const deck = [
+      card({ id: "future", due: "2026-07-01T00:00:00Z" }),
+      card({ id: "box2", box: 2, due: "2026-01-01T00:00:00Z" }),
+      card({ id: "box1-new", due: "2026-05-01T00:00:00Z" }),
+      card({ id: "box1-old", due: "2026-02-01T00:00:00Z" }),
+      card({ id: "exact", box: 3, due: now.toISOString() }),
+    ];
+    expect(dueCards(deck, now).map((c) => c.id)).toEqual(["box1-old", "box1-new", "box2", "exact"]);
+    expect(dueCards(deck, now, 2).map((c) => c.id)).toEqual(["box1-old", "box1-new"]);
+    expect(dueCards([], now)).toEqual([]);
+  });
+});
+
+describe("handleUserPrompt", () => {
+  const prompt = (p: string, sessionId: string | null = "s1") =>
+    handleUserPrompt({ sessionId: sessionId ?? undefined, prompt: p, cwd: repo });
+
+  it("is silent when quiz mode is off and the prompt is not a command", () => {
+    expect(prompt("fix the bug")).toBeNull();
+  });
+
+  it("turns quiz mode on with the protocol, then reminds on every prompt", () => {
+    const on = prompt("quiz on");
+    expect(on).toMatch(/now ON/);
+    expect(on).toMatch(/Predict first/);
+    expect(on).toMatch(/Hand off code worth writing by hand/);
+    expect(on).not.toMatch(/\{\{CLI\}\}/);
+    expect(isOn(repo, "s1")).toBe(true);
+    expect(readState(repo).lastReviewSha).toBe(git("rev-parse", "HEAD"));
+    const reminder = prompt("fix the bug");
+    expect(reminder).toMatch(/Quiz mode is ON/);
+    expect(reminder).toMatch(/write by hand/);
+  });
+
+  it("keeps sessions independent", () => {
+    prompt("quiz on", "s1");
+    expect(prompt("fix the bug", "s2")).toBeNull();
+  });
+
+  it("turns quiz mode off", () => {
+    prompt("quiz on");
+    expect(prompt("/quiz off")).toMatch(/now OFF/);
+    expect(isOn(repo, "s1")).toBe(false);
+    expect(prompt("fix the bug")).toBeNull();
+  });
+
+  it("does not move an existing review baseline when turned on again", () => {
+    prompt("quiz on");
+    const first = readState(repo).lastReviewSha;
+    commit();
+    prompt("quiz on", "s2");
+    expect(readState(repo).lastReviewSha).toBe(first);
+  });
+
+  it("reports status", () => {
+    addCard(repo, { question: "q", answer: "a" });
+    expect(prompt("quiz status")).toMatch(/OFF.*1 card\(s\), 1 due/);
+  });
+
+  it("starts a review on request, or says nothing is due", () => {
+    expect(prompt("quiz review")).toMatch(/No cards are due/);
+    addCard(repo, { question: "Why a queue?", answer: "backpressure" });
+    const review = prompt("quiz review");
+    expect(review).toMatch(/Review due/);
+    expect(review).toMatch(/Why a queue\?/);
+  });
+
+  it("refuses to toggle without a session id", () => {
+    expect(prompt("quiz on", null)).toMatch(/No session id/);
+    expect(prompt("fix the bug", null)).toBeNull();
+  });
+
+  it("sanitizes session ids into a single file name", () => {
+    prompt("quiz on", "../../evil");
+    expect(fs.readdirSync(path.join(repo, ".agent-quiz", "sessions"))).toEqual([".._.._evil"]);
+  });
+});
+
+describe("handleStop", () => {
+  const stop = (stopHookActive = false) =>
+    handleStop({ sessionId: "s1", cwd: repo, stopHookActive });
+  const turnOn = () => handleUserPrompt({ sessionId: "s1", prompt: "quiz on", cwd: repo });
+
+  it("does nothing when quiz mode is off", () => {
+    addCard(repo, { question: "q", answer: "a" });
+    commit(5);
+    expect(stop()).toBeNull();
+  });
+
+  it("waits until the commit threshold is reached", () => {
+    turnOn();
+    addCard(repo, { question: "q", answer: "a" });
+    commit(2);
+    expect(stop()).toBeNull();
+    commit();
+    expect(stop()).toMatch(/3 commits since the last review/);
+  });
+
+  it("prompts once per HEAD and respects stop_hook_active", () => {
+    turnOn();
+    addCard(repo, { question: "q", answer: "a" });
+    commit(3);
+    expect(stop(true)).toBeNull();
+    expect(stop()).not.toBeNull();
+    expect(stop()).toBeNull();
+    commit();
+    expect(stop()).not.toBeNull();
+  });
+
+  it("restarts the counter silently when nothing is due", () => {
+    turnOn();
+    commit(3);
+    expect(stop()).toBeNull();
+    expect(readState(repo).lastReviewSha).toBe(git("rev-parse", "HEAD"));
+  });
+
+  it("restarts the counter after a review or snooze, keeping cards due", () => {
+    turnOn();
+    addCard(repo, { question: "q", answer: "a" });
+    commit(3);
+    expect(stop()).not.toBeNull();
+    markReviewed(repo);
+    commit(2);
+    expect(stop()).toBeNull();
+    commit();
+    expect(stop()).toMatch(/id 1/);
+  });
+
+  it("resets the baseline when history was rewritten", () => {
+    turnOn();
+    addCard(repo, { question: "q", answer: "a" });
+    fs.writeFileSync(
+      path.join(repo, ".agent-quiz", "state.json"),
+      JSON.stringify({ lastReviewSha: "deadbeef".repeat(5) }),
+    );
+    commit(3);
+    expect(stop()).toBeNull();
+    expect(readState(repo).lastReviewSha).toBe(git("rev-parse", "HEAD"));
+  });
+
+  it("honors reviewEvery and maxPerReview from config.json", () => {
+    turnOn();
+    fs.writeFileSync(
+      path.join(repo, ".agent-quiz", "config.json"),
+      JSON.stringify({ reviewEvery: 1, maxPerReview: 1 }),
+    );
+    expect(config(repo)).toEqual({ reviewEvery: 1, maxPerReview: 1 });
+    addCard(repo, { question: "first", answer: "a" });
+    addCard(repo, { question: "second", answer: "a" });
+    commit();
+    const reason = stop();
+    expect(reason).toMatch(/1 card\(s\)/);
+    expect(reason).not.toMatch(/second/);
+  });
+
+  it("does nothing outside a git repository", () => {
+    const dir = tmpDir();
+    handleUserPrompt({ sessionId: "s1", prompt: "quiz on", cwd: dir });
+    addCard(dir, { question: "q", answer: "a" });
+    expect(handleStop({ sessionId: "s1", cwd: dir, stopHookActive: false })).toBeNull();
+  });
+
+  it("does nothing in a repository with no commits", () => {
+    repo = tmpDir();
+    git("init", "-q");
+    turnOn();
+    expect(stop()).toBeNull();
+  });
+});
+
+describe("CLI", () => {
+  const cli = (args: string[], input = "", cwd = repo) =>
+    spawnSync("node", [SCRIPT, ...args], { cwd, input, encoding: "utf8" });
+
+  it("imports cleanly when argv[1] is not a real file (opencode's Bun binary)", () => {
+    const code = `process.argv[1] = "/$bunfs/root/opencode"; await import(${JSON.stringify(SCRIPT)});`;
+    const r = spawnSync("node", ["--input-type=module", "-e", code], { encoding: "utf8" });
+    expect(r.stderr).toBe("");
+    expect(r.status).toBe(0);
+  });
+
+  it("emits Claude Code / Codex UserPromptSubmit JSON", () => {
+    const r = cli(
+      ["hook", "user-prompt"],
+      JSON.stringify({ session_id: "s1", prompt: "quiz on", cwd: repo }),
+    );
+    expect(r.status).toBe(0);
+    const out = JSON.parse(r.stdout);
+    expect(out.hookSpecificOutput.hookEventName).toBe("UserPromptSubmit");
+    expect(out.hookSpecificOutput.additionalContext).toMatch(/now ON/);
+  });
+
+  it("emits a Stop block decision when a review is due", () => {
+    cli(
+      ["hook", "user-prompt"],
+      JSON.stringify({ session_id: "s1", prompt: "quiz on", cwd: repo }),
+    );
+    addCard(repo, { question: "q", answer: "a" });
+    commit(3);
+    const r = cli(
+      ["hook", "stop"],
+      JSON.stringify({ session_id: "s1", cwd: repo, stop_hook_active: false }),
+    );
+    const out = JSON.parse(r.stdout);
+    expect(out.decision).toBe("block");
+    expect(out.reason).toMatch(/Review due/);
+  });
+
+  it("prints nothing when there is nothing to say", () => {
+    const r = cli(["hook", "stop"], JSON.stringify({ session_id: "s1", cwd: repo }));
+    expect([r.status, r.stdout]).toEqual([0, ""]);
+  });
+
+  it("never fails a hook, even on malformed input", () => {
+    const r = cli(["hook", "user-prompt"], "{not json");
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe("");
+    expect(r.stderr).toMatch(/agent-quiz:/);
+  });
+
+  it("adds, grades, and lists cards", () => {
+    expect(
+      cli(["add"], JSON.stringify({ question: "Why WAL?", answer: "crash safety" })).stdout,
+    ).toMatch(/added card 1/);
+    expect(cli(["due"]).stdout).toMatch(/Why WAL\?/);
+    expect(cli(["grade", "1", "right", "high"]).stdout).toMatch(/box 2/);
+    expect(cli(["due"]).stdout).toMatch(/nothing due/);
+    expect(cli(["reviewed"]).status).toBe(0);
+  });
+
+  it("exits non-zero on bad input to non-hook commands", () => {
+    expect(cli(["add"], "{oops").status).toBe(1);
+    expect(cli(["add"], JSON.stringify({ question: "q" })).stderr).toMatch(/answer/);
+    expect(cli(["grade", "1"]).status).toBe(1);
+    expect(cli(["nope"]).status).toBe(2);
+  });
+});
