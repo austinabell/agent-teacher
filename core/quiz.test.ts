@@ -242,6 +242,20 @@ describe("handleUserPrompt", () => {
     expect(prompt("quiz status")).toMatch(/OFF.*1 card\(s\), 1 due/);
   });
 
+  it("includes usage commands and settings in status", () => {
+    fs.mkdirSync(path.join(repo, ".agent-quiz"), { recursive: true });
+    fs.writeFileSync(
+      path.join(repo, ".agent-quiz", "config.json"),
+      JSON.stringify({ reviewEvery: 2 }),
+    );
+    const status = prompt("quiz status")!;
+    for (const cmd of ["quiz on", "quiz off", "quiz status", "quiz review"])
+      expect(status).toContain(cmd);
+    expect(status).toContain(path.join(repo, ".agent-quiz", "config.json"));
+    expect(status).toMatch(/reviewEvery.*currently 2/);
+    expect(status).toMatch(/maxPerReview.*currently 5/);
+  });
+
   it("starts a review on request, or says nothing is due", () => {
     expect(prompt("quiz review")).toMatch(/No cards are due/);
     addCard(repo, { question: "Why a queue?", answer: "backpressure" });

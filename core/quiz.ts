@@ -270,7 +270,22 @@ export function parseCommand(prompt: unknown): Command | null {
 function statusText(root: string, sessionId: string | undefined): string {
   const deck = readDeck(root);
   const since = commitsSince(root, readState(root).lastReviewSha);
-  return `[agent-quiz] Quiz mode is ${isOn(root, sessionId) ? "ON" : "OFF"} for this session. Deck: ${deck.length} card(s), ${dueCards(deck).length} due. Commits since last review: ${since ?? "unknown"} (review every ${config(root).reviewEvery}). Tell the user this in one line.`;
+  const { reviewEvery, maxPerReview } = config(root);
+  return [
+    `[agent-quiz] Quiz mode is ${isOn(root, sessionId) ? "ON" : "OFF"} for this session. Deck: ${deck.length} card(s), ${dueCards(deck).length} due. Commits since last review: ${since ?? "unknown"} (review every ${reviewEvery}).`,
+    "",
+    "Commands (type /quiz <cmd> in Claude Code and opencode, $quiz <cmd> or plain quiz <cmd> in Codex):",
+    "- quiz on: turn quiz mode on for this session",
+    "- quiz off: turn it off",
+    "- quiz status: show this status",
+    "- quiz review: start a review now, without waiting for the commit count",
+    "",
+    `Settings: create or edit ${path.join(root, DIR, "config.json")} (JSON, all keys optional):`,
+    `- reviewEvery: commits between automatic reviews (currently ${reviewEvery}, default ${DEFAULTS.reviewEvery})`,
+    `- maxPerReview: most cards shown per review (currently ${maxPerReview}, default ${DEFAULTS.maxPerReview})`,
+    "",
+    "Show the user the status line, then the commands and settings as two short lists.",
+  ].join("\n");
 }
 
 export interface PromptEvent {

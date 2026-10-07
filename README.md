@@ -69,12 +69,12 @@ This writes a plugin to `~/.config/opencode/plugins/agent-quiz.ts`, adds a `/qui
 
 ## Usage
 
-| Command       | Effect                                                      |
-| ------------- | ----------------------------------------------------------- |
-| `quiz on`     | Turn quiz mode on for this session                          |
-| `quiz off`    | Turn it off                                                 |
-| `quiz status` | Show whether it is on, the card count, and how many are due |
-| `quiz review` | Start a review now, without waiting for the commit count    |
+| Command       | Effect                                                                                  |
+| ------------- | --------------------------------------------------------------------------------------- |
+| `quiz on`     | Turn quiz mode on for this session                                                      |
+| `quiz off`    | Turn it off                                                                             |
+| `quiz status` | Show whether it is on, the card count, how many are due, the commands, and the settings |
+| `quiz review` | Start a review now, without waiting for the commit count                                |
 
 Type the command as `/quiz on` in Claude Code and opencode. In Codex, type `$quiz on` or plain `quiz on`. The hook handles the command before the model sees it, so toggling costs no tool call.
 
