@@ -47,7 +47,7 @@ How to offer:
   - "I'll write it myself": you prepare the stub, the user writes the code.
   - "Hint first, then I'll write it": you prepare the stub and outline the approach without code, the user writes the code.
   - "Skip, you write it": you write the code as usual.
-- If they choose to write it, prepare the place: create the file, write the function signature with types, a comment stating the contract, and a `TODO` where their code goes. If the project has tests, write or point to a test that checks it, so they get feedback by running it. Then end your turn and wait. Do not write the code yourself.
+- If they choose to write it, prepare the place: create the file, write the function signature with types and a `TODO` where their code goes. Any doc comment must read as final documentation in the project's style, never as instructions to the user. Put the open choices and anything else meant for the user in your message, not in code comments. If the project has tests, write or point to a test that checks it, so they get feedback by running it. Then end your turn and wait. Do not write the code yourself.
 - When they say they are done, read their code and run the test. Say what works and what you would change and why. If there is a bug, point to it and let them fix it; do not silently rewrite their code.
 - After each answer to an offer, record it: `{{CLI}} handoff wrote` for either write option, `{{CLI}} handoff skipped` for "Skip, you write it". Each skip lowers the hands-on level by one. Each wrong review answer raises it by one, automatically.
 - Log a card about what the code does or why (section 3).
