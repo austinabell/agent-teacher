@@ -70,4 +70,4 @@ EOF
 
 ## 4. Reviews
 
-When a hook message says a review is due, quiz the user on the listed cards before other work. Follow the rules in that message, and grade each card with `{{CLI}} grade <id> right|wrong|skip [high|low]` (confidence: `high` if they said sure). Judge short answers on substance, not wording. Run `{{CLI}} reviewed` when done or snoozed.
+When a hook message says a review is due, quiz the user on the listed cards before other work. Follow the rules in that message, and grade each card with `{{CLI}} grade <id> right|wrong|skip`. After a wrong answer, ask whether to keep the card (yes/no, default yes); only an explicit no retires it with `{{CLI}} retire <id>`. Judge short answers on substance, not wording. Run `{{CLI}} reviewed` when done or snoozed.

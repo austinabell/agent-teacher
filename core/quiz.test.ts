@@ -19,6 +19,7 @@ import {
   parseCommand,
   readDeck,
   readState,
+  retire,
 } from "./quiz.ts";
 
 const SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), "quiz.ts");
@@ -148,7 +149,7 @@ describe("grade", () => {
     addCard(repo, { question: "q", answer: "a" }, now);
     const expectedDays = [1, 3, 7, 21, 21];
     for (const days of expectedDays) {
-      const c = grade(repo, "1", "right", "high", now);
+      const c = grade(repo, "1", "right", now);
       expect(Date.parse(c.due) - now.getTime()).toBe(days * DAY);
     }
     expect(readDeck(repo)[0]!.box).toBe(5);
@@ -156,29 +157,45 @@ describe("grade", () => {
 
   it("sends a wrong answer back to box 1, due now", () => {
     addCard(repo, { question: "q", answer: "a" }, now);
-    grade(repo, "1", "right", undefined, now);
-    grade(repo, "1", "right", undefined, now);
-    const c = grade(repo, "1", "wrong", "high", now);
+    grade(repo, "1", "right", now);
+    grade(repo, "1", "right", now);
+    const c = grade(repo, "1", "wrong", now);
     expect(c.box).toBe(1);
     expect(c.due).toBe(now.toISOString());
     expect(c.history.map((h) => h.result)).toEqual(["right", "right", "wrong"]);
-    expect(c.history[2]!.confidence).toBe("high");
   });
 
   it("leaves box and due unchanged on skip but records it", () => {
     const before = addCard(repo, { question: "q", answer: "a" }, now);
-    const c = grade(repo, "1", "skip", undefined, new Date(now.getTime() + DAY));
+    const c = grade(repo, "1", "skip", new Date(now.getTime() + DAY));
     expect([c.box, c.due]).toEqual([before.box, before.due]);
     expect(c.history).toHaveLength(1);
   });
 
   it.each([
-    ["1", "maybe", undefined, /result/],
-    ["1", "right", "very", /confidence/],
-    ["99", "right", undefined, /no card/],
-  ])("rejects grade(%s, %s, %s)", (id, result, confidence, message) => {
+    ["1", "maybe", /result/],
+    ["99", "right", /no card/],
+  ])("rejects grade(%s, %s)", (id, result, message) => {
     addCard(repo, { question: "q", answer: "a" });
-    expect(() => grade(repo, id, result, confidence)).toThrow(message);
+    expect(() => grade(repo, id, result)).toThrow(message);
+  });
+});
+
+describe("retire", () => {
+  it("keeps the card and its history but stops it coming due", () => {
+    const now = new Date("2026-01-01T00:00:00Z");
+    addCard(repo, { question: "q", answer: "a" }, now);
+    grade(repo, "1", "wrong", now);
+    expect(dueCards(readDeck(repo), now)).toHaveLength(1);
+    retire(repo, "1");
+    const [c] = readDeck(repo);
+    expect(c!.retired).toBe(true);
+    expect(c!.history.map((h) => h.result)).toEqual(["wrong"]);
+    expect(dueCards(readDeck(repo), now)).toEqual([]);
+  });
+
+  it("rejects an unknown id", () => {
+    expect(() => retire(repo, "99")).toThrow(/no card/);
   });
 });
 
@@ -234,10 +251,10 @@ describe("hands-on level", () => {
 
   it("rises when a review answer is graded wrong, not right or skip", () => {
     addCard(repo, { question: "q", answer: "a" }, now);
-    grade(repo, "1", "right", undefined, now);
-    grade(repo, "1", "skip", undefined, now);
+    grade(repo, "1", "right", now);
+    grade(repo, "1", "skip", now);
     expect(handsOn(repo)).toBe(3);
-    grade(repo, "1", "wrong", undefined, now);
+    grade(repo, "1", "wrong", now);
     expect(handsOn(repo)).toBe(4);
   });
 
@@ -260,6 +277,7 @@ describe("dueCards", () => {
       card({ id: "box1-new", due: "2026-05-01T00:00:00Z" }),
       card({ id: "box1-old", due: "2026-02-01T00:00:00Z" }),
       card({ id: "exact", box: 3, due: now.toISOString() }),
+      card({ id: "retired", due: "2026-01-01T00:00:00Z", retired: true }),
     ];
     expect(dueCards(deck, now).map((c) => c.id)).toEqual(["box1-old", "box1-new", "box2", "exact"]);
     expect(dueCards(deck, now, 2).map((c) => c.id)).toEqual(["box1-old", "box1-new"]);
@@ -335,6 +353,9 @@ describe("handleUserPrompt", () => {
     const review = prompt("quiz review");
     expect(review).toMatch(/Review due/);
     expect(review).toMatch(/Why a queue\?/);
+    expect(review).toMatch(/Do not ask how confident/);
+    expect(review).toMatch(/keep the card \(yes\/no, default yes\)/);
+    expect(review).toMatch(/retire <id>/);
   });
 
   it("refuses to toggle without a session id", () => {
@@ -495,7 +516,8 @@ describe("CLI", () => {
       cli(["add"], JSON.stringify({ question: "Why WAL?", answer: "crash safety" })).stdout,
     ).toMatch(/added card 1/);
     expect(cli(["due"]).stdout).toMatch(/Why WAL\?/);
-    expect(cli(["grade", "1", "right", "high"]).stdout).toMatch(/box 2/);
+    expect(cli(["grade", "1", "wrong"]).stdout).toMatch(/box 1/);
+    expect(cli(["retire", "1"]).stdout).toMatch(/card 1 retired/);
     expect(cli(["due"]).stdout).toMatch(/nothing due/);
     expect(cli(["reviewed"]).status).toBe(0);
   });
@@ -513,6 +535,8 @@ describe("CLI", () => {
     expect(cli(["add"], "{oops").status).toBe(1);
     expect(cli(["add"], JSON.stringify({ question: "q" })).stderr).toMatch(/answer/);
     expect(cli(["grade", "1"]).status).toBe(1);
+    expect(cli(["retire"]).stderr).toMatch(/usage: retire <id>/);
+    expect(cli(["retire", "99"]).status).toBe(1);
     expect(cli(["nope"]).status).toBe(2);
   });
 });

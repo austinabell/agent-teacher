@@ -28,7 +28,6 @@ const HANDS_ON_LEVELS = [
 ] as const;
 
 export type Result = "right" | "wrong" | "skip";
-export type Confidence = "high" | "low";
 export type HandsOnEvent = "skipped" | "wrote" | "wrong";
 
 export interface Card {
@@ -43,7 +42,8 @@ export interface Card {
   created: string;
   box: number;
   due: string;
-  history: { at: string; result: Result; confidence?: Confidence }[];
+  history: { at: string; result: Result }[];
+  retired?: boolean;
 }
 
 export interface CardInput {
@@ -205,21 +205,13 @@ export function addCard(root: string, input: CardInput, now = new Date()): Card 
   return card;
 }
 
-export function grade(
-  root: string,
-  id: string,
-  result: string,
-  confidence?: string,
-  now = new Date(),
-): Card {
+export function grade(root: string, id: string, result: string, now = new Date()): Card {
   if (result !== "right" && result !== "wrong" && result !== "skip")
     throw new Error("result must be right, wrong, or skip");
-  if (confidence !== undefined && confidence !== "high" && confidence !== "low")
-    throw new Error("confidence must be high or low");
   const deck = readDeck(root);
   const card = deck.find((c) => c.id === id);
   if (!card) throw new Error(`no card with id ${id}`);
-  card.history.push({ at: now.toISOString(), result, ...(confidence ? { confidence } : {}) });
+  card.history.push({ at: now.toISOString(), result });
   if (result === "right") {
     card.box = Math.min(card.box + 1, 5);
     card.due = new Date(
@@ -234,9 +226,19 @@ export function grade(
   return card;
 }
 
+// Retired cards stay in the deck with their history but are never due again.
+export function retire(root: string, id: string): Card {
+  const deck = readDeck(root);
+  const card = deck.find((c) => c.id === id);
+  if (!card) throw new Error(`no card with id ${id}`);
+  card.retired = true;
+  writeDeck(root, deck);
+  return card;
+}
+
 export function dueCards(deck: Card[], now = new Date(), limit = Infinity): Card[] {
   return deck
-    .filter((c) => new Date(c.due) <= now)
+    .filter((c) => !c.retired && new Date(c.due) <= now)
     .sort((a, b) => a.box - b.box || Date.parse(a.due) - Date.parse(b.due))
     .slice(0, limit);
 }
@@ -277,9 +279,10 @@ function formatCard(c: Card): string {
 export function reviewPrompt(cards: Card[], reason: string): string {
   return [
     `[agent-quiz] Review due (${reason}). Quiz the user on these ${cards.length} card(s) now, before anything else.`,
-    "Do not reveal an answer before the user responds. Ask for confidence (sure / unsure) with each answer.",
+    "Do not reveal an answer before the user responds. Do not ask how confident they are.",
     'Offer "Snooze review" on the first question. After each answer, give one or two sentences of explanatory feedback.',
-    `After each answer run: ${cli("grade <id> right|wrong|skip [high|low]")}`,
+    `After each answer run: ${cli("grade <id> right|wrong|skip")}`,
+    `After a wrong answer, ask whether to keep the card (yes/no, default yes) alongside the next question. Only an explicit no retires it: run ${cli("retire <id>")}.`,
     `When finished, or if the user snoozes, run: ${cli("reviewed")}`,
     "",
     ...cards.map(formatCard),
@@ -448,7 +451,8 @@ function runHook(event: string | undefined): void {
 
 const USAGE = `usage:
   quiz.ts add                        card JSON on stdin: {"question","answer","why","type":"mc"|"short","options":[...],"kind"}
-  quiz.ts grade <id> right|wrong|skip [high|low]
+  quiz.ts grade <id> right|wrong|skip
+  quiz.ts retire <id>                stop reviewing a card (it stays in the deck)
   quiz.ts handoff wrote|skipped      record the answer to a hand-off offer (adjusts the hands-on level)
   quiz.ts reviewed                   finish or snooze a review (restarts the commit counter)
   quiz.ts due                        list due cards
@@ -464,10 +468,16 @@ export function main(argv: string[], cwd = process.cwd()): void {
       break;
     }
     case "grade": {
-      const [id, result, confidence] = args;
-      if (!id || !result) throw new Error("usage: grade <id> right|wrong|skip [high|low]");
-      const card = grade(root, id, result, confidence);
+      const [id, result] = args;
+      if (!id || !result) throw new Error("usage: grade <id> right|wrong|skip");
+      const card = grade(root, id, result);
       console.log(`card ${card.id}: box ${card.box}, due ${card.due}`);
+      break;
+    }
+    case "retire": {
+      const [id] = args;
+      if (!id) throw new Error("usage: retire <id>");
+      console.log(`card ${retire(root, id).id} retired`);
       break;
     }
     case "handoff": {
