@@ -23,11 +23,11 @@ it("codex: adds both hooks, keeps the user's hooks, and is idempotent", () => {
   const hooks = JSON.parse(read(".codex/hooks.json")).hooks;
   expect(hooks.Stop.flatMap((g: { hooks: unknown[] }) => g.hooks)).toEqual([
     mine,
-    expect.objectContaining({ command: expect.stringMatching(/quiz\.ts" hook stop$/) }),
+    expect.objectContaining({ command: expect.stringMatching(/teach\.ts" hook stop$/) }),
   ]);
   expect(hooks.UserPromptSubmit).toHaveLength(1);
   expect(hooks.UserPromptSubmit[0].hooks[0].command).toMatch(/hook user-prompt$/);
-  expect(fs.existsSync(path.join(home, ".agents", "skills", "quiz", "SKILL.md"))).toBe(true);
+  expect(fs.existsSync(path.join(home, ".agents", "skills", "teach", "SKILL.md"))).toBe(true);
 });
 
 it("codex: asks for the feature flag only when it is missing", () => {
@@ -44,18 +44,44 @@ it("codex: fails loudly on a malformed hooks.json instead of overwriting it", ()
 });
 
 it("refuses to replace a real skill directory", () => {
-  const dest = path.join(home, ".agents", "skills", "quiz");
+  const dest = path.join(home, ".agents", "skills", "teach");
   fs.mkdirSync(dest, { recursive: true });
   fs.writeFileSync(path.join(dest, "SKILL.md"), "mine");
   expect(() => installOpencode(home)).toThrow(/not a symlink/);
-  expect(read(".agents/skills/quiz/SKILL.md")).toBe("mine");
+  expect(read(".agents/skills/teach/SKILL.md")).toBe("mine");
 });
 
-it("opencode: writes a plugin shim and a /quiz command", async () => {
+it("opencode: writes a plugin shim and a /teach command", async () => {
   installOpencode(home);
   installOpencode(home);
   const shim = read(".config/opencode/plugins/agent-teacher.ts");
   const target = JSON.parse(shim.match(/from (".*");/)![1]!);
   expect(fs.existsSync(target)).toBe(true);
-  expect(read(".config/opencode/commands/quiz.md")).toMatch(/^quiz \$ARGUMENTS$/m);
+  expect(read(".config/opencode/commands/teach.md")).toMatch(/^teach \$ARGUMENTS$/m);
+});
+
+it("codex: replaces hooks that still point at the old core/quiz.ts", () => {
+  fs.mkdirSync(path.join(home, ".codex"));
+  const old = { type: "command", command: 'node "/old/core/quiz.ts" hook stop' };
+  fs.writeFileSync(
+    path.join(home, ".codex", "hooks.json"),
+    JSON.stringify({ hooks: { Stop: [{ hooks: [old] }] } }),
+  );
+  installCodex(home);
+  const commands = JSON.parse(read(".codex/hooks.json")).hooks.Stop.flatMap(
+    (g: { hooks: { command: string }[] }) => g.hooks.map((h) => h.command),
+  );
+  expect(commands).toEqual([expect.stringMatching(/teach\.ts" hook stop$/)]);
+});
+
+it("opencode: removes the old /quiz command it wrote, but not someone else's", () => {
+  const commands = path.join(home, ".config", "opencode", "commands");
+  fs.mkdirSync(commands, { recursive: true });
+  const old = "---\ndescription: Toggle agent-quiz mode\n---\n";
+  fs.writeFileSync(path.join(commands, "quiz.md"), old);
+  installOpencode(home);
+  expect(fs.existsSync(path.join(commands, "quiz.md"))).toBe(false);
+  fs.writeFileSync(path.join(commands, "quiz.md"), "my own quiz command");
+  installOpencode(home);
+  expect(read(".config/opencode/commands/quiz.md")).toBe("my own quiz command");
 });

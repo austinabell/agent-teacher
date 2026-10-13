@@ -1,16 +1,18 @@
 # agent-teacher
 
 A teaching mode for coding agents, so you actually know the decisions your agent made.
-It is off by default and you turn it on per session. While it is on:
+It is off by default and you turn it on per session. It has three parts:
 
-1. **Predict first.** Before a non-trivial design decision, the agent asks you to pick an option, then reveals its choice and the reason.
-2. **Decision cards.** The agent logs every notable decision as a quiz card, including the ones it did not ask you about.
-3. **Write it yourself.** The agent stubs core logic (functions with real decisions in them: algorithms, parsing, business rules, failure paths) with a `TODO` and pauses for you to write it, one component at a time. It writes the glue and boilerplate itself, then reviews your code and runs the tests. How much it hands off depends on a hands-on level from 0 to 4, starting at 3. The idea comes from Anthropic's [learning-output-style](https://github.com/anthropics/claude-code/tree/main/plugins/learning-output-style) plugin.
-4. **Review every few commits.** After 3 commits (yours or the agent's), the agent quizzes you on the cards that are due. Cards come back on a spaced-repetition schedule.
+1. **Predict first (always on).** Before a non-trivial design decision, the agent asks you to pick an option, then reveals its choice and the reason.
+2. **Quiz: decision cards (`/teach quiz`).** The agent logs every notable decision as a quiz card, including the ones it did not ask you about.
+3. **Write: write it yourself (`/teach write`).** The agent stubs core logic (functions with real decisions in them: algorithms, parsing, business rules, failure paths) with a `TODO` and pauses for you to write it, one component at a time. It writes the glue and boilerplate itself, then reviews your code and runs the tests. How much it hands off depends on a hands-on level from 0 to 4, starting at 3. The idea comes from Anthropic's [learning-output-style](https://github.com/anthropics/claude-code/tree/main/plugins/learning-output-style) plugin.
+4. **Quiz: review every few commits.** After 3 commits (yours or the agent's), the agent quizzes you on the cards that are due. Cards come back on a spaced-repetition schedule.
 
-You can skip any part at any time. A predict-first question always offers "Skip, just decide", and a hand-off always offers "Skip, you write it". Each skipped hand-off lowers the hands-on level by one, and each wrong review answer raises it by one. The level is stored per project in `.agent-teacher/state.json`, and `quiz status` shows it. A review can be snoozed, and snoozed cards stay due for the next one. After a wrong answer, the agent asks whether to keep the card; answering no retires it, so it stays in `.agent-teacher/deck.json` but never comes up again.
+`/teach on` turns on all of it. `/teach quiz` and `/teach write` turn on predict-first plus only that part, so you can do the quizzes without the hand-offs, or the reverse.
 
-Works with Claude Code, Codex, and opencode. All three share one core (`core/quiz.ts`).
+You can skip any part at any time. A predict-first question always offers "Skip, just decide", and a hand-off always offers "Skip, you write it". Each skipped hand-off lowers the hands-on level by one, and each wrong review answer raises it by one. The level is stored per project in `.agent-teacher/state.json`, and `teach status` shows it. A review can be snoozed, and snoozed cards stay due for the next one. After a wrong answer, the agent asks whether to keep the card; answering no retires it, so it stays in `.agent-teacher/deck.json` but never comes up again.
+
+Works with Claude Code, Codex, and opencode. All three share one core (`core/teach.ts`).
 
 ## Why
 
@@ -29,7 +31,7 @@ The problem: when an agent writes the code, it is easy to skim its output and mi
 ### Goals
 
 - You can explain every important decision in the code your agent wrote: what was chosen, and why.
-- Getting there costs as little attention as possible: short questions at natural break points, and nothing while quiz mode is off.
+- Getting there costs as little attention as possible: short questions at natural break points, and nothing while teach mode is off.
 - It never blocks you. Every question can be skipped, and skipping never loses a card.
 - Your own commits count toward the review threshold. The commit count comes from git, not from watching the agent's commands.
 
@@ -52,7 +54,7 @@ Restart the session afterwards.
 node install.ts codex
 ```
 
-This merges two hooks into `~/.codex/hooks.json` and keeps any hooks you already have there. It also links the skill to `~/.agents/skills/quiz`. Then:
+This merges two hooks into `~/.codex/hooks.json` and keeps any hooks you already have there. It also links the skill to `~/.agents/skills/teach`. Then:
 
 1. Add `hooks = true` under `[features]` in `~/.codex/config.toml`. The installer tells you if this is missing.
 2. Start Codex and run `/hooks` to review and trust the two agent-teacher hooks.
@@ -65,23 +67,25 @@ Hooks go in the global `hooks.json` because Codex currently doesn't run hooks bu
 node install.ts opencode
 ```
 
-This writes a plugin to `~/.config/opencode/plugins/agent-teacher.ts`, adds a `/quiz` command, and links the skill. Restart opencode afterwards. See the opencode limitation under [Limitations](#limitations) before relying on it.
+This writes a plugin to `~/.config/opencode/plugins/agent-teacher.ts`, adds a `/teach` command, and links the skill. Restart opencode afterwards. See the opencode limitation under [Limitations](#limitations) before relying on it.
 
 ## Usage
 
-| Command       | Effect                                                                                  |
-| ------------- | --------------------------------------------------------------------------------------- |
-| `quiz on`     | Turn quiz mode on for this session                                                      |
-| `quiz off`    | Turn it off                                                                             |
-| `quiz status` | Show whether it is on, the card count, how many are due, the commands, and the settings |
-| `quiz review` | Start a review now, without waiting for the commit count                                |
+| Command        | Effect                                                                                    |
+| -------------- | ----------------------------------------------------------------------------------------- |
+| `teach on`     | Turn on predict-first, quiz, and write for this session                                   |
+| `teach quiz`   | Turn on predict-first and quiz only: decision cards and reviews, no hand-offs             |
+| `teach write`  | Turn on predict-first and write only: hand-offs, no cards or reviews                      |
+| `teach off`    | Turn it off                                                                               |
+| `teach status` | Show the current mode, the card count, how many are due, the commands, and the settings   |
+| `teach review` | Start a review now, without waiting for the commit count. Works in any mode, or while off |
 
-Type the command as `/quiz on` in Claude Code and opencode. In Codex, type `$quiz on` or plain `quiz on`. The hook handles the command before the model sees it, so toggling costs no tool call.
+`on`, `quiz` and `write` each set the mode, so you can switch between them mid-session. Type the command as `/teach on` in Claude Code and opencode. In Codex, type `$teach on` or plain `teach on`. The hook handles the command before the model sees it, so toggling costs no tool call.
 
 ## How it works
 
-- **Hooks.** On every prompt, a `UserPromptSubmit` hook (`chat.message` in opencode) applies any toggle command. While quiz mode is on, it adds a short reminder of the protocol in `core/protocol.md`. When the agent finishes a turn, a `Stop` hook (`session.idle` in opencode) checks the commit count. Once 3 commits have been made since the last review and at least one card is due, it starts a review.
-- **Cards.** Each card is multiple choice or short answer, and records the commit where the decision was made. The agent adds cards with `node core/quiz.ts add`.
+- **Hooks.** On every prompt, a `UserPromptSubmit` hook (`chat.message` in opencode) applies any toggle command. While teach mode is on, it adds a short reminder of the protocol in `core/protocol.md`, limited to the parts that are on. When the agent finishes a turn, a `Stop` hook (`session.idle` in opencode) checks the commit count. Once 3 commits have been made since the last review and at least one card is due, it starts a review. This only happens when quiz is on.
+- **Cards.** Each card is multiple choice or short answer, and records the commit where the decision was made. The agent adds cards with `node core/teach.ts add`.
 - **Schedule.** A Leitner box system. A right answer moves the card up one box. Box 1 is due right away, then the intervals are 1, 3, 7 and 21 days. A wrong answer sends the card back to box 1, and a skipped card stays where it is. A review shows at most 5 cards, starting with the lowest box.
 - **No loops.** A review is offered at most once per HEAD commit, and never while a stop hook is already active.
 
@@ -89,12 +93,12 @@ Type the command as `/quiz on` in Claude Code and opencode. In Codex, type `$qui
 
 Everything is stored in `.agent-teacher/` at the repository root. That directory gitignores itself.
 
-| File          | Contents                                          |
-| ------------- | ------------------------------------------------- |
-| `deck.json`   | Cards, their boxes, due dates, and history        |
-| `state.json`  | The commit at the last review                     |
-| `sessions/`   | One file per session where quiz mode is on        |
-| `config.json` | Optional: `{"reviewEvery": 3, "maxPerReview": 5}` |
+| File          | Contents                                                   |
+| ------------- | ---------------------------------------------------------- |
+| `deck.json`   | Cards, their boxes, due dates, and history                 |
+| `state.json`  | The commit at the last review, and the hands-on level      |
+| `sessions/`   | One file per session where teach mode is on, with its mode |
+| `config.json` | Optional: `{"reviewEvery": 3, "maxPerReview": 5}`          |
 
 ## Limitations
 

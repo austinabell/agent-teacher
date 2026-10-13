@@ -4,7 +4,7 @@
 // session.idle stands in for Claude Code's Stop hook.
 
 import type { Plugin } from "@opencode-ai/plugin";
-import { handleStop, handleUserPrompt } from "../../core/quiz.ts";
+import { handleStop, handleUserPrompt } from "../../core/teach.ts";
 
 export const AgentTeacher: Plugin = async ({ client, directory }) => {
   const pending = new Map<string, string>();

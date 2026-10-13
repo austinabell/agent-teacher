@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import type { PluginInput } from "@opencode-ai/plugin";
 import { beforeEach, expect, it } from "vitest";
-import { addCard } from "../../core/quiz.ts";
+import { addCard } from "../../core/teach.ts";
 import { AgentTeacher } from "./plugin.ts";
 
 const GIT_ENV = {
@@ -58,14 +58,14 @@ beforeEach(() => {
   git("commit", "--allow-empty", "-q", "-m", "init");
 });
 
-it("injects nothing while quiz mode is off", async () => {
+it("injects nothing while teach mode is off", async () => {
   const hooks = await load();
   expect(await send(hooks, "fix the bug")).toEqual([]);
 });
 
 it("toggles on, injects the protocol once, then a reminder per message", async () => {
   const hooks = await load();
-  const [on] = await send(hooks, "quiz on");
+  const [on] = await send(hooks, "teach on");
   expect(on).toMatch(/now ON/);
   const empty = { system: [] as string[] };
   await hooks["experimental.chat.system.transform"]!(
@@ -73,14 +73,14 @@ it("toggles on, injects the protocol once, then a reminder per message", async (
     empty,
   );
   expect(empty.system).toEqual([]);
-  expect((await send(hooks, "fix the bug"))[0]).toMatch(/Quiz mode is ON/);
+  expect((await send(hooks, "fix the bug"))[0]).toMatch(/Teach mode is ON/);
 });
 
 it("ignores synthetic parts when reading the prompt", async () => {
   const hooks = await load();
   await hooks["chat.message"]!(
     { sessionID: "s1" },
-    { message: {} as never, parts: [textPart("quiz on", true), textPart("hello")] },
+    { message: {} as never, parts: [textPart("teach on", true), textPart("hello")] },
   );
   const output = { system: [] as string[] };
   await hooks["experimental.chat.system.transform"]!(
@@ -92,7 +92,7 @@ it("ignores synthetic parts when reading the prompt", async () => {
 
 it("sends a review prompt on session.idle once the commit threshold is reached", async () => {
   const hooks = await load();
-  await send(hooks, "quiz on");
+  await send(hooks, "teach on");
   addCard(repo, { question: "Why a queue?", answer: "backpressure" });
   await idle(hooks);
   expect(prompts).toEqual([]);

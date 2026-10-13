@@ -62,7 +62,11 @@ interface State {
 }
 
 type Config = typeof DEFAULTS;
-type Command = "on" | "off" | "status" | "review";
+type Command = "on" | "off" | "quiz" | "write" | "status" | "review";
+// Predict-first questions are always on; these are the optional parts.
+// quiz: decision cards and commit-triggered reviews. write: hand-offs.
+export type Feature = "quiz" | "write";
+const ALL_FEATURES: readonly Feature[] = ["quiz", "write"];
 
 // ---------- project state ----------
 
@@ -82,7 +86,7 @@ export function projectRoot(cwd: string): string {
   return run(cwd, ["rev-parse", "--show-toplevel"]) ?? cwd;
 }
 
-function quizDir(root: string): string {
+function stateDir(root: string): string {
   const dir = path.join(root, DIR);
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(path.join(dir, "sessions"), { recursive: true });
@@ -111,8 +115,8 @@ export function config(root: string): Config {
   return { ...DEFAULTS, ...readJson<Partial<Config>>(path.join(root, DIR, "config.json"), {}) };
 }
 
-const statePath = (root: string) => path.join(quizDir(root), "state.json");
-const deckPath = (root: string) => path.join(quizDir(root), "deck.json");
+const statePath = (root: string) => path.join(stateDir(root), "state.json");
+const deckPath = (root: string) => path.join(stateDir(root), "deck.json");
 export const readState = (root: string): State => readJson<State>(statePath(root), {});
 const writeState = (root: string, s: State) => writeJson(statePath(root), s);
 export const readDeck = (root: string): Card[] => readJson<Card[]>(deckPath(root), []);
@@ -121,20 +125,33 @@ const writeDeck = (root: string, d: Card[]) => writeJson(deckPath(root), d);
 function sessionFile(root: string, sessionId: string): string {
   const safe = sessionId.replace(/[^A-Za-z0-9_.-]/g, "_");
   if (!safe) throw new Error("missing session id");
-  return path.join(quizDir(root), "sessions", safe);
+  return path.join(stateDir(root), "sessions", safe);
 }
 
-export function isOn(root: string, sessionId: string | undefined): boolean {
-  return Boolean(sessionId) && fs.existsSync(sessionFile(root, sessionId!));
-}
-
-export function setOn(root: string, sessionId: string, on: boolean): void {
+// The features enabled for a session, or null when teach mode is off.
+export function sessionFeatures(root: string, sessionId: string | undefined): Feature[] | null {
+  if (!sessionId) return null;
   const file = sessionFile(root, sessionId);
-  if (!on) {
+  if (!fs.existsSync(file)) return null;
+  const { features } = readJson<{ features?: unknown }>(file, {});
+  if (!Array.isArray(features)) return [...ALL_FEATURES];
+  return ALL_FEATURES.filter((f) => features.includes(f));
+}
+
+export const isOn = (root: string, sessionId: string | undefined): boolean =>
+  sessionFeatures(root, sessionId) !== null;
+
+const hasFeature = (root: string, sessionId: string | undefined, f: Feature): boolean =>
+  sessionFeatures(root, sessionId)?.includes(f) ?? false;
+
+// Pass the features to turn on with, or null to turn teach mode off.
+export function setOn(root: string, sessionId: string, features: readonly Feature[] | null): void {
+  const file = sessionFile(root, sessionId);
+  if (!features) {
     fs.rmSync(file, { force: true });
     return;
   }
-  fs.writeFileSync(file, new Date().toISOString() + "\n");
+  writeJson(file, { since: new Date().toISOString(), features });
   const state = readState(root);
   const head = run(root, ["rev-parse", "HEAD"]);
   if (!state.lastReviewSha && head) writeState(root, { ...state, lastReviewSha: head });
@@ -262,9 +279,30 @@ export function commitsSince(root: string, sha: string | undefined): number | nu
 
 const cli = (args: string) => `node "${SCRIPT}" ${args}`;
 
-function protocolText(): string {
-  return fs.readFileSync(PROTOCOL, "utf8").replaceAll("{{CLI}}", `node "${SCRIPT}"`);
+// protocol.md wraps feature-specific lines in <!-- if:quiz --> / <!-- if:write -->
+// ... <!-- end --> blocks (which may nest); drop the blocks for features that are off.
+export function protocolText(features: readonly Feature[]): string {
+  const kept: string[] = [];
+  const open: boolean[] = [];
+  for (const line of fs.readFileSync(PROTOCOL, "utf8").split(/\r?\n/)) {
+    const block = line.match(/^<!-- if:(\w+) -->$/);
+    if (block) open.push(features.includes(block[1] as Feature));
+    else if (line === "<!-- end -->") open.pop();
+    else if (open.every(Boolean)) kept.push(line);
+  }
+  return kept
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .replaceAll("{{CLI}}", `node "${SCRIPT}"`);
 }
+
+const MODE_LABELS: Record<string, string> = {
+  "quiz,write": "predict-first, quiz, and write",
+  quiz: "predict-first and quiz",
+  write: "predict-first and write",
+  "": "predict-first only",
+};
+const modeLabel = (features: readonly Feature[]) => MODE_LABELS[features.join(",")]!;
 
 function formatCard(c: Card): string {
   const lines = [
@@ -294,17 +332,36 @@ const handsOnText = (root: string) => {
   return `Hands-on level ${level}/${HANDS_ON_MAX}: ${HANDS_ON_LEVELS[level]}`;
 };
 
-const reminder = (root: string) =>
-  [
-    "[agent-teacher] Quiz mode is ON. The user turned it on explicitly, so it takes precedence over instructions to finish the task without pausing or to do the work instead of asking.",
+function reminder(root: string, features: readonly Feature[]): string {
+  const lines = [
+    `[agent-teacher] Teach mode is ON (${modeLabel(features)}). The user turned it on explicitly, so it takes precedence over instructions to finish the task without pausing or to do the work instead of asking.`,
     'Before any non-trivial design decision, ask the user to predict or choose first (offer "Skip, just decide").',
-    `${handsOnText(root)} A hand-off ends your turn: you are blocked on the user. After each hand-off answer run ${cli("handoff wrote|skipped")}.`,
-    `Log every notable decision as a card with ${cli("add")}. If the full protocol is no longer in your context, read ${PROTOCOL}.`,
-  ].join(" ");
+  ];
+  if (features.includes("write"))
+    lines.push(
+      `${handsOnText(root)} A hand-off ends your turn: you are blocked on the user. After each hand-off answer run ${cli("handoff wrote|skipped")}.`,
+    );
+  else lines.push("Do not hand off code for the user to write.");
+  if (features.includes("quiz"))
+    lines.push(`Log every notable decision as a card with ${cli("add")}.`);
+  else lines.push("Do not log cards.");
+  const off = ALL_FEATURES.filter((f) => !features.includes(f));
+  const skip = off.length
+    ? `, skipping the ${off.map((f) => `<!-- if:${f} -->`).join(" and ")} blocks`
+    : "";
+  lines.push(`If the full protocol is no longer in your context, read ${PROTOCOL}${skip}.`);
+  return lines.join(" ");
+}
 
 // ---------- hook handlers (tool-agnostic) ----------
 
-const COMMANDS: readonly string[] = ["on", "off", "status", "review"];
+const COMMANDS: readonly string[] = ["on", "off", "quiz", "write", "status", "review"];
+// The features each turn-on command enables.
+const MODES: Partial<Record<Command, readonly Feature[]>> = {
+  on: ALL_FEATURES,
+  quiz: ["quiz"],
+  write: ["write"],
+};
 
 function normalize(arg: string | undefined): Command | null {
   const a = (arg ?? "").toLowerCase();
@@ -312,14 +369,14 @@ function normalize(arg: string | undefined): Command | null {
   return COMMANDS.includes(a) ? (a as Command) : null;
 }
 
-// Matches "quiz on", "/quiz off", "$quiz status", "/agent-teacher:quiz review", "/quiz",
+// Matches "teach on", "/teach quiz", "$teach status", "/agent-teacher:teach review", "/teach",
 // and Claude Code's expanded <command-name>/<command-args> form.
 export function parseCommand(prompt: unknown): Command | null {
   const text = String(prompt ?? "").trim();
-  if (/<command-name>\/?(?:agent-teacher:)?quiz<\/command-name>/i.test(text)) {
+  if (/<command-name>\/?(?:agent-teacher:)?teach<\/command-name>/i.test(text)) {
     return normalize(text.match(/<command-args>\s*(\w*)\s*<\/command-args>/i)?.[1]);
   }
-  const plain = text.match(/^[/$]?(?:agent-teacher:)?quiz(?:\s+(\w+))?\s*$/i);
+  const plain = text.match(/^[/$]?(?:agent-teacher:)?teach(?:\s+(\w+))?\s*$/i);
   return plain ? normalize(plain[1]) : null;
 }
 
@@ -327,14 +384,17 @@ function statusText(root: string, sessionId: string | undefined): string {
   const deck = readDeck(root);
   const since = commitsSince(root, readState(root).lastReviewSha);
   const { reviewEvery, maxPerReview } = config(root);
+  const features = sessionFeatures(root, sessionId);
   return [
-    `[agent-teacher] Quiz mode is ${isOn(root, sessionId) ? "ON" : "OFF"} for this session. Deck: ${deck.length} card(s), ${dueCards(deck).length} due. Commits since last review: ${since ?? "unknown"} (review every ${reviewEvery}). Hands-on level: ${handsOn(root)}/${HANDS_ON_MAX}.`,
+    `[agent-teacher] Teach mode is ${features ? `ON (${modeLabel(features)})` : "OFF"} for this session. Deck: ${deck.length} card(s), ${dueCards(deck).length} due. Commits since last review: ${since ?? "unknown"} (review every ${reviewEvery}). Hands-on level: ${handsOn(root)}/${HANDS_ON_MAX}.`,
     "",
-    "Commands (type /quiz <cmd> in Claude Code and opencode, $quiz <cmd> or plain quiz <cmd> in Codex):",
-    "- quiz on: turn quiz mode on for this session",
-    "- quiz off: turn it off",
-    "- quiz status: show this status",
-    "- quiz review: start a review now, without waiting for the commit count",
+    "Commands (type /teach <cmd> in Claude Code and opencode, $teach <cmd> or plain teach <cmd> in Codex):",
+    "- teach on: turn on everything: predict-first questions, quiz cards with reviews, and writing core logic yourself",
+    "- teach quiz: predict-first and quiz cards with reviews only (no hand-offs)",
+    "- teach write: predict-first and writing core logic yourself only (no cards or reviews)",
+    "- teach off: turn teach mode off",
+    "- teach status: show this status",
+    "- teach review: start a review now, without waiting for the commit count",
     "",
     `Settings: create or edit ${path.join(root, DIR, "config.json")} (JSON, all keys optional):`,
     `- reviewEvery: commits between automatic reviews (currently ${reviewEvery}, default ${DEFAULTS.reviewEvery})`,
@@ -354,15 +414,22 @@ export interface PromptEvent {
 export function handleUserPrompt({ sessionId, prompt, cwd }: PromptEvent): string | null {
   const root = projectRoot(cwd);
   const cmd = parseCommand(prompt);
-  if ((cmd === "on" || cmd === "off") && !sessionId)
-    return "[agent-teacher] No session id was provided by the tool, so quiz mode cannot be toggled. Tell the user.";
+  const mode = cmd ? MODES[cmd] : undefined;
+  if ((mode || cmd === "off") && !sessionId)
+    return "[agent-teacher] No session id was provided by the tool, so teach mode cannot be toggled. Tell the user.";
+  if (mode) {
+    setOn(root, sessionId!, mode);
+    const parts = [
+      `[agent-teacher] Teach mode is now ON for this session (${modeLabel(mode)}). This replaces any earlier teach protocol in your context. Confirm to the user in one line, then follow this protocol for the rest of the session.`,
+    ];
+    if (mode.includes("write")) parts.push(handsOnText(root));
+    parts.push(protocolText(mode));
+    return parts.join("\n\n");
+  }
   switch (cmd) {
-    case "on":
-      setOn(root, sessionId!, true);
-      return `[agent-teacher] Quiz mode is now ON for this session. Confirm to the user in one line, then follow this protocol for the rest of the session.\n\n${handsOnText(root)}\n\n${protocolText()}`;
     case "off":
-      setOn(root, sessionId!, false);
-      return "[agent-teacher] Quiz mode is now OFF for this session. Stop following the agent-teacher protocol. Confirm to the user in one line.";
+      setOn(root, sessionId!, null);
+      return "[agent-teacher] Teach mode is now OFF for this session. Stop following the agent-teacher protocol. Confirm to the user in one line.";
     case "status":
       return statusText(root, sessionId);
     case "review": {
@@ -371,8 +438,10 @@ export function handleUserPrompt({ sessionId, prompt, cwd }: PromptEvent): strin
         ? "[agent-teacher] No cards are due. Tell the user in one line."
         : reviewPrompt(due, "requested by the user");
     }
-    default:
-      return isOn(root, sessionId) ? reminder(root) : null;
+    default: {
+      const features = sessionFeatures(root, sessionId);
+      return features ? reminder(root, features) : null;
+    }
   }
 }
 
@@ -385,7 +454,7 @@ export interface StopEvent {
 // Returns a continuation prompt when a review is due, or null to let the agent stop.
 export function handleStop({ sessionId, cwd, stopHookActive }: StopEvent): string | null {
   const root = projectRoot(cwd);
-  if (stopHookActive || !isOn(root, sessionId)) return null;
+  if (stopHookActive || !hasFeature(root, sessionId, "quiz")) return null;
   const head = run(root, ["rev-parse", "HEAD"]);
   if (!head) return null;
   const state = readState(root);
@@ -450,13 +519,13 @@ function runHook(event: string | undefined): void {
 }
 
 const USAGE = `usage:
-  quiz.ts add                        card JSON on stdin: {"question","answer","why","type":"mc"|"short","options":[...],"kind"}
-  quiz.ts grade <id> right|wrong|skip
-  quiz.ts retire <id>                stop reviewing a card (it stays in the deck)
-  quiz.ts handoff wrote|skipped      record the answer to a hand-off offer (adjusts the hands-on level)
-  quiz.ts reviewed                   finish or snooze a review (restarts the commit counter)
-  quiz.ts due                        list due cards
-  quiz.ts hook user-prompt|stop      called by tool hooks, JSON on stdin`;
+  teach.ts add                        card JSON on stdin: {"question","answer","why","type":"mc"|"short","options":[...],"kind"}
+  teach.ts grade <id> right|wrong|skip
+  teach.ts retire <id>                stop reviewing a card (it stays in the deck)
+  teach.ts handoff wrote|skipped      record the answer to a hand-off offer (adjusts the hands-on level)
+  teach.ts reviewed                   finish or snooze a review (restarts the commit counter)
+  teach.ts due                        list due cards
+  teach.ts hook user-prompt|stop      called by tool hooks, JSON on stdin`;
 
 export function main(argv: string[], cwd = process.cwd()): void {
   const [cmd, ...args] = argv;

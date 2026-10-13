@@ -9,7 +9,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
-const CORE = path.join(ROOT, "core", "quiz.ts");
+const CORE = path.join(ROOT, "core", "teach.ts");
 
 interface HookHandler {
   type: string;
@@ -21,15 +21,22 @@ interface HooksFile {
   [key: string]: unknown;
 }
 
-const isOurs = (h: HookHandler) => /core[\\/]quiz\.ts" hook /.test(h.command);
+// Matches core/teach.ts and its old name, core/quiz.ts.
+const isOurs = (h: HookHandler) => /core[\\/](?:teach|quiz)\.ts" hook /.test(h.command);
 
 function linkSkill(home: string): string {
-  const dest = path.join(home, ".agents", "skills", "quiz");
-  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  const skills = path.join(home, ".agents", "skills");
+  // The skill used to be called "quiz"; remove that link if it points into this checkout.
+  const old = path.join(skills, "quiz");
+  if (fs.lstatSync(old, { throwIfNoEntry: false })?.isSymbolicLink()) {
+    if (fs.readlinkSync(old) === path.join(ROOT, "skills", "quiz")) fs.unlinkSync(old);
+  }
+  const dest = path.join(skills, "teach");
+  fs.mkdirSync(skills, { recursive: true });
   const existing = fs.lstatSync(dest, { throwIfNoEntry: false });
   if (existing?.isSymbolicLink()) fs.unlinkSync(dest);
   else if (existing) throw new Error(`${dest} exists and is not a symlink; remove it first`);
-  fs.symlinkSync(path.join(ROOT, "skills", "quiz"), dest);
+  fs.symlinkSync(path.join(ROOT, "skills", "teach"), dest);
   return dest;
 }
 
@@ -66,19 +73,26 @@ export function installCodex(home: string): string[] {
 export function installOpencode(home: string): string[] {
   const base = path.join(home, ".config", "opencode");
   const plugin = path.join(base, "plugins", "agent-teacher.ts");
-  const command = path.join(base, "commands", "quiz.md");
+  const command = path.join(base, "commands", "teach.md");
   fs.mkdirSync(path.dirname(plugin), { recursive: true });
   fs.mkdirSync(path.dirname(command), { recursive: true });
   // Remove the shim from before the rename so the plugin isn't loaded twice.
   fs.rmSync(path.join(base, "plugins", "agent-quiz.ts"), { force: true });
+  // Remove the old /quiz command, but only if this installer wrote it.
+  const oldCommand = path.join(base, "commands", "quiz.md");
+  if (
+    fs.existsSync(oldCommand) &&
+    /agent-(?:quiz|teacher) mode/.test(fs.readFileSync(oldCommand, "utf8"))
+  )
+    fs.rmSync(oldCommand);
   fs.writeFileSync(
     plugin,
     `// installed by agent-teacher (${ROOT})\nexport { default } from ${JSON.stringify(path.join(ROOT, "adapters", "opencode", "plugin.ts"))};\n`,
   );
-  // The command expands "/quiz on" to "quiz on", which the plugin recognizes.
+  // The command expands "/teach on" to "teach on", which the plugin recognizes.
   fs.writeFileSync(
     command,
-    "---\ndescription: Toggle agent-teacher mode (on, off, status, review)\n---\nquiz $ARGUMENTS\n",
+    "---\ndescription: Toggle agent-teacher mode (on, quiz, write, off, status, review)\n---\nteach $ARGUMENTS\n",
   );
   return [
     `wrote plugin ${plugin}`,

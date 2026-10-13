@@ -1,12 +1,12 @@
 {
-  "description": "agent-teacher: toggle handling, quiz-mode reminders, and commit-triggered reviews",
+  "description": "agent-teacher: toggle handling, teach-mode reminders, and commit-triggered reviews",
   "hooks": {
     "UserPromptSubmit": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/core/quiz.ts\" hook user-prompt",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/core/teach.ts\" hook user-prompt",
             "timeout": 10
           }
         ]
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/core/quiz.ts\" hook stop",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/core/teach.ts\" hook stop",
             "timeout": 10
           }
         ]

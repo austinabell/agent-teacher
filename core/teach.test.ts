@@ -17,12 +17,14 @@ import {
   isOn,
   markReviewed,
   parseCommand,
+  protocolText,
   readDeck,
   readState,
   retire,
-} from "./quiz.ts";
+  sessionFeatures,
+} from "./teach.ts";
 
-const SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), "quiz.ts");
+const SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), "teach.ts");
 const DAY = 24 * 60 * 60 * 1000;
 const GIT_ENV = {
   ...process.env,
@@ -69,30 +71,32 @@ beforeEach(() => {
 
 describe("parseCommand", () => {
   it.each([
-    ["quiz on", "on"],
-    ["/quiz off", "off"],
-    ["$quiz status", "status"],
-    ["/agent-teacher:quiz review", "review"],
-    ["  QUIZ ON  ", "on"],
-    ["/quiz", "status"],
-    ["quiz", "status"],
+    ["teach on", "on"],
+    ["/teach off", "off"],
+    ["$teach status", "status"],
+    ["/agent-teacher:teach review", "review"],
+    ["  TEACH ON  ", "on"],
+    ["teach quiz", "quiz"],
+    ["/teach write", "write"],
+    ["/teach", "status"],
+    ["teach", "status"],
     [
-      "<command-name>/agent-teacher:quiz</command-name>\n<command-message>quiz</command-message>\n<command-args>on</command-args>",
+      "<command-name>/agent-teacher:teach</command-name>\n<command-message>teach</command-message>\n<command-args>on</command-args>",
       "on",
     ],
-    ["<command-name>/quiz</command-name>", "status"],
+    ["<command-name>/teach</command-name>", "status"],
   ])("%j -> %s", (prompt, expected) => {
     expect(parseCommand(prompt)).toBe(expected);
   });
 
   it.each([
-    "quiz me about the parser",
-    "quiz onx",
-    "quiz bogus",
-    "please quiz on",
+    "teach me about the parser",
+    "teach onx",
+    "teach bogus",
+    "please teach on",
     "",
     undefined,
-    "/quizzes on",
+    "/teaching on",
   ])("%j -> null", (prompt) => {
     expect(parseCommand(prompt)).toBeNull();
   });
@@ -258,12 +262,12 @@ describe("hands-on level", () => {
     expect(handsOn(repo)).toBe(4);
   });
 
-  it("shows up in status and in the quiz-on message", () => {
+  it("shows up in status and in the teach-on message", () => {
     adjustHandsOn(repo, "skipped");
-    const on = handleUserPrompt({ sessionId: "s1", prompt: "quiz on", cwd: repo });
+    const on = handleUserPrompt({ sessionId: "s1", prompt: "teach on", cwd: repo });
     expect(on).toMatch(/Hands-on level 2\/4: Offer one hand-off per component/);
-    expect(on).toMatch(/## 0\. Precedence/);
-    const status = handleUserPrompt({ sessionId: "s1", prompt: "quiz status", cwd: repo });
+    expect(on).toMatch(/## Precedence/);
+    const status = handleUserPrompt({ sessionId: "s1", prompt: "teach status", cwd: repo });
     expect(status).toMatch(/Hands-on level: 2\/4/);
   });
 });
@@ -289,12 +293,12 @@ describe("handleUserPrompt", () => {
   const prompt = (p: string, sessionId: string | null = "s1") =>
     handleUserPrompt({ sessionId: sessionId ?? undefined, prompt: p, cwd: repo });
 
-  it("is silent when quiz mode is off and the prompt is not a command", () => {
+  it("is silent when teach mode is off and the prompt is not a command", () => {
     expect(prompt("fix the bug")).toBeNull();
   });
 
-  it("turns quiz mode on with the protocol, then reminds on every prompt", () => {
-    const on = prompt("quiz on");
+  it("turns teach mode on with the protocol, then reminds on every prompt", () => {
+    const on = prompt("teach on");
     expect(on).toMatch(/now ON/);
     expect(on).toMatch(/Predict first/);
     expect(on).toMatch(/Hand off core logic for the user to write/);
@@ -302,35 +306,35 @@ describe("handleUserPrompt", () => {
     expect(isOn(repo, "s1")).toBe(true);
     expect(readState(repo).lastReviewSha).toBe(git("rev-parse", "HEAD"));
     const reminder = prompt("fix the bug");
-    expect(reminder).toMatch(/Quiz mode is ON/);
+    expect(reminder).toMatch(/Teach mode is ON/);
     expect(reminder).toMatch(/Hands-on level 3\/4: Hand off most core logic/);
     expect(reminder).toMatch(/takes precedence/);
     expect(reminder).toMatch(/handoff wrote\|skipped/);
   });
 
   it("keeps sessions independent", () => {
-    prompt("quiz on", "s1");
+    prompt("teach on", "s1");
     expect(prompt("fix the bug", "s2")).toBeNull();
   });
 
-  it("turns quiz mode off", () => {
-    prompt("quiz on");
-    expect(prompt("/quiz off")).toMatch(/now OFF/);
+  it("turns teach mode off", () => {
+    prompt("teach on");
+    expect(prompt("/teach off")).toMatch(/now OFF/);
     expect(isOn(repo, "s1")).toBe(false);
     expect(prompt("fix the bug")).toBeNull();
   });
 
   it("does not move an existing review baseline when turned on again", () => {
-    prompt("quiz on");
+    prompt("teach on");
     const first = readState(repo).lastReviewSha;
     commit();
-    prompt("quiz on", "s2");
+    prompt("teach on", "s2");
     expect(readState(repo).lastReviewSha).toBe(first);
   });
 
   it("reports status", () => {
     addCard(repo, { question: "q", answer: "a" });
-    expect(prompt("quiz status")).toMatch(/OFF.*1 card\(s\), 1 due/);
+    expect(prompt("teach status")).toMatch(/OFF.*1 card\(s\), 1 due/);
   });
 
   it("includes usage commands and settings in status", () => {
@@ -339,18 +343,18 @@ describe("handleUserPrompt", () => {
       path.join(repo, ".agent-teacher", "config.json"),
       JSON.stringify({ reviewEvery: 2 }),
     );
-    const status = prompt("quiz status")!;
-    for (const cmd of ["quiz on", "quiz off", "quiz status", "quiz review"])
-      expect(status).toContain(cmd);
+    const status = prompt("teach status")!;
+    for (const cmd of ["on", "quiz", "write", "off", "status", "review"])
+      expect(status).toContain(`teach ${cmd}`);
     expect(status).toContain(path.join(repo, ".agent-teacher", "config.json"));
     expect(status).toMatch(/reviewEvery.*currently 2/);
     expect(status).toMatch(/maxPerReview.*currently 5/);
   });
 
   it("starts a review on request, or says nothing is due", () => {
-    expect(prompt("quiz review")).toMatch(/No cards are due/);
+    expect(prompt("teach review")).toMatch(/No cards are due/);
     addCard(repo, { question: "Why a queue?", answer: "backpressure" });
-    const review = prompt("quiz review");
+    const review = prompt("teach review");
     expect(review).toMatch(/Review due/);
     expect(review).toMatch(/Why a queue\?/);
     expect(review).toMatch(/Do not ask how confident/);
@@ -359,22 +363,101 @@ describe("handleUserPrompt", () => {
   });
 
   it("refuses to toggle without a session id", () => {
-    expect(prompt("quiz on", null)).toMatch(/No session id/);
+    expect(prompt("teach on", null)).toMatch(/No session id/);
     expect(prompt("fix the bug", null)).toBeNull();
   });
 
   it("sanitizes session ids into a single file name", () => {
-    prompt("quiz on", "../../evil");
+    prompt("teach on", "../../evil");
     expect(fs.readdirSync(path.join(repo, ".agent-teacher", "sessions"))).toEqual([".._.._evil"]);
+  });
+});
+
+describe("modes", () => {
+  const prompt = (p: string, sessionId = "s1") =>
+    handleUserPrompt({ sessionId, prompt: p, cwd: repo });
+
+  it("turns on only the requested features", () => {
+    prompt("teach quiz");
+    expect(sessionFeatures(repo, "s1")).toEqual(["quiz"]);
+    prompt("teach write");
+    expect(sessionFeatures(repo, "s1")).toEqual(["write"]);
+    prompt("teach on");
+    expect(sessionFeatures(repo, "s1")).toEqual(["quiz", "write"]);
+    prompt("teach off");
+    expect(sessionFeatures(repo, "s1")).toBeNull();
+  });
+
+  it("quiz mode keeps predict-first and cards but drops hand-offs", () => {
+    const on = prompt("teach quiz")!;
+    expect(on).toMatch(/now ON for this session \(predict-first and quiz\)/);
+    expect(on).toMatch(/## Predict first/);
+    expect(on).toMatch(/## Log every notable decision as a card/);
+    expect(on).toMatch(/## Reviews/);
+    expect(on).not.toMatch(/Hand off core logic|Hands-on level|Let me write it|handoff/);
+    const reminder = prompt("fix the bug")!;
+    expect(reminder).toMatch(/Teach mode is ON \(predict-first and quiz\)/);
+    expect(reminder).toMatch(/Do not hand off code/);
+    expect(reminder).toMatch(/ add/);
+    expect(reminder).not.toMatch(/Hands-on level/);
+    expect(reminder).toMatch(/skipping the <!-- if:write --> blocks/);
+  });
+
+  it("write mode keeps predict-first and hand-offs but drops cards and reviews", () => {
+    const on = prompt("teach write")!;
+    expect(on).toMatch(/\(predict-first and write\)/);
+    expect(on).toMatch(/## Predict first/);
+    expect(on).toMatch(/## Hand off core logic for the user to write/);
+    expect(on).toMatch(/Let me write it/);
+    expect(on).toMatch(/Hands-on level 3\/4/);
+    expect(on).not.toMatch(/## Log every notable decision|## Reviews|Log a card/);
+    const reminder = prompt("fix the bug")!;
+    expect(reminder).toMatch(/Do not log cards/);
+    expect(reminder).toMatch(/handoff wrote\|skipped/);
+  });
+
+  it("strips every feature block and marker from the protocol", () => {
+    for (const features of [[], ["quiz"], ["write"], ["quiz", "write"]] as const) {
+      const text = protocolText(features);
+      expect(text).not.toMatch(/<!--|\{\{CLI\}\}|\n\n\n/);
+      expect(text).toMatch(/## Precedence/);
+    }
+    expect(protocolText(["quiz"])).toMatch(/## Reviews/);
+    expect(protocolText(["write"])).not.toMatch(/Log a card/);
+    expect(protocolText(["quiz", "write"])).toMatch(/Log a card/);
+  });
+
+  it("does not start reviews in write mode", () => {
+    prompt("teach write");
+    addCard(repo, { question: "q", answer: "a" });
+    commit(3);
+    expect(handleStop({ sessionId: "s1", cwd: repo, stopHookActive: false })).toBeNull();
+  });
+
+  it("still allows a review on request in write mode", () => {
+    prompt("teach write");
+    addCard(repo, { question: "q", answer: "a" });
+    expect(prompt("teach review")).toMatch(/Review due/);
+  });
+
+  it("shows the mode in status", () => {
+    prompt("teach quiz");
+    expect(prompt("teach status")).toMatch(/Teach mode is ON \(predict-first and quiz\)/);
+  });
+
+  it("treats a session file without features as everything on", () => {
+    fs.mkdirSync(path.join(repo, ".agent-teacher", "sessions"), { recursive: true });
+    fs.writeFileSync(path.join(repo, ".agent-teacher", "sessions", "s1"), "2026-01-01T00:00:00Z\n");
+    expect(sessionFeatures(repo, "s1")).toEqual(["quiz", "write"]);
   });
 });
 
 describe("handleStop", () => {
   const stop = (stopHookActive = false) =>
     handleStop({ sessionId: "s1", cwd: repo, stopHookActive });
-  const turnOn = () => handleUserPrompt({ sessionId: "s1", prompt: "quiz on", cwd: repo });
+  const turnOn = () => handleUserPrompt({ sessionId: "s1", prompt: "teach on", cwd: repo });
 
-  it("does nothing when quiz mode is off", () => {
+  it("does nothing when teach mode is off", () => {
     addCard(repo, { question: "q", answer: "a" });
     commit(5);
     expect(stop()).toBeNull();
@@ -448,7 +531,7 @@ describe("handleStop", () => {
 
   it("does nothing outside a git repository", () => {
     const dir = tmpDir();
-    handleUserPrompt({ sessionId: "s1", prompt: "quiz on", cwd: dir });
+    handleUserPrompt({ sessionId: "s1", prompt: "teach on", cwd: dir });
     addCard(dir, { question: "q", answer: "a" });
     expect(handleStop({ sessionId: "s1", cwd: dir, stopHookActive: false })).toBeNull();
   });
@@ -475,7 +558,7 @@ describe("CLI", () => {
   it("emits Claude Code / Codex UserPromptSubmit JSON", () => {
     const r = cli(
       ["hook", "user-prompt"],
-      JSON.stringify({ session_id: "s1", prompt: "quiz on", cwd: repo }),
+      JSON.stringify({ session_id: "s1", prompt: "teach on", cwd: repo }),
     );
     expect(r.status).toBe(0);
     const out = JSON.parse(r.stdout);
@@ -486,7 +569,7 @@ describe("CLI", () => {
   it("emits a Stop block decision when a review is due", () => {
     cli(
       ["hook", "user-prompt"],
-      JSON.stringify({ session_id: "s1", prompt: "quiz on", cwd: repo }),
+      JSON.stringify({ session_id: "s1", prompt: "teach on", cwd: repo }),
     );
     addCard(repo, { question: "q", answer: "a" });
     commit(3);

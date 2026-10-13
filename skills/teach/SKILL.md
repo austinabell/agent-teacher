@@ -1,6 +1,6 @@
 ---
-name: quiz
-description: Toggle agent-teacher mode for this session (quiz on, quiz off, quiz status, quiz review). Use when the user types one of these commands.
+name: teach
+description: Toggle agent-teacher mode for this session (teach on, teach quiz, teach write, teach off, teach status, teach review). Use when the user types one of these commands.
 ---
 
 The agent-teacher hook handles this command before you see it and adds a message starting with `[agent-teacher]` to your context. Follow that message.
