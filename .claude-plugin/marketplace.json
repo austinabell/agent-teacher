@@ -1,14 +1,14 @@
 {
-  "name": "agent-quiz",
-  "description": "Quiz mode for agent-made design decisions.",
+  "name": "agent-teacher",
+  "description": "Learn the decisions your coding agent makes.",
   "owner": {
     "name": "austinabell"
   },
   "plugins": [
     {
-      "name": "agent-quiz",
+      "name": "agent-teacher",
       "source": "./",
-      "description": "Per-session quiz mode for design decisions made by the agent."
+      "description": "Per-session teaching mode: predict the agent's design decisions, write core logic yourself, and review decisions with spaced repetition."
     }
   ]
 }

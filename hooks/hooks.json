@@ -1,5 +1,5 @@
 {
-  "description": "agent-quiz: toggle handling, quiz-mode reminders, and commit-triggered reviews",
+  "description": "agent-teacher: toggle handling, quiz-mode reminders, and commit-triggered reviews",
   "hooks": {
     "UserPromptSubmit": [
       {

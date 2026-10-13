@@ -5,7 +5,7 @@ import path from "node:path";
 import type { PluginInput } from "@opencode-ai/plugin";
 import { beforeEach, expect, it } from "vitest";
 import { addCard } from "../../core/quiz.ts";
-import { AgentQuiz } from "./plugin.ts";
+import { AgentTeacher } from "./plugin.ts";
 
 const GIT_ENV = {
   ...process.env,
@@ -23,7 +23,7 @@ function git(...args: string[]): void {
 
 async function load() {
   const client = { session: { prompt: async (req: unknown) => void prompts.push(req) } };
-  return AgentQuiz({ client, directory: repo } as unknown as PluginInput);
+  return AgentTeacher({ client, directory: repo } as unknown as PluginInput);
 }
 
 const textPart = (text: string, synthetic = false) => ({
@@ -52,7 +52,7 @@ const idle = (hooks: Awaited<ReturnType<typeof load>>) =>
   hooks.event!({ event: { type: "session.idle", properties: { sessionID: "s1" } } });
 
 beforeEach(() => {
-  repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agent-quiz-oc-")));
+  repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agent-teacher-oc-")));
   prompts = [];
   git("init", "-q");
   git("commit", "--allow-empty", "-q", "-m", "init");

@@ -1,4 +1,4 @@
-# agent-quiz protocol
+# agent-teacher protocol
 
 The user turned on quiz mode because they skim agent output and miss design decisions. Your job is to make them engage with each important decision and write core logic themselves, instead of reading code you wrote.
 

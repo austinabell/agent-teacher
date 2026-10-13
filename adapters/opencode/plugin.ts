@@ -1,4 +1,4 @@
-// opencode adapter for agent-quiz. opencode has no hook that returns context,
+// opencode adapter for agent-teacher. opencode has no hook that returns context,
 // so chat.message runs the shared handler (which applies toggles) and stashes
 // its text; the system-prompt transform for that session's LLM call injects it.
 // session.idle stands in for Claude Code's Stop hook.
@@ -6,7 +6,7 @@
 import type { Plugin } from "@opencode-ai/plugin";
 import { handleStop, handleUserPrompt } from "../../core/quiz.ts";
 
-export const AgentQuiz: Plugin = async ({ client, directory }) => {
+export const AgentTeacher: Plugin = async ({ client, directory }) => {
   const pending = new Map<string, string>();
 
   return {
@@ -40,4 +40,4 @@ export const AgentQuiz: Plugin = async ({ client, directory }) => {
 };
 
 // opencode 2.x requires a default definition with an id; `server` carries the hooks above.
-export default { id: "agent-quiz", server: AgentQuiz, setup() {} };
+export default { id: "agent-teacher", server: AgentTeacher, setup() {} };
