@@ -8,7 +8,7 @@ let home: string;
 const read = (p: string) => fs.readFileSync(path.join(home, p), "utf8");
 
 beforeEach(() => {
-  home = fs.mkdtempSync(path.join(os.tmpdir(), "agent-quiz-home-"));
+  home = fs.mkdtempSync(path.join(os.tmpdir(), "agent-teacher-home-"));
 });
 
 it("codex: adds both hooks, keeps the user's hooks, and is idempotent", () => {
@@ -54,7 +54,7 @@ it("refuses to replace a real skill directory", () => {
 it("opencode: writes a plugin shim and a /quiz command", async () => {
   installOpencode(home);
   installOpencode(home);
-  const shim = read(".config/opencode/plugins/agent-quiz.ts");
+  const shim = read(".config/opencode/plugins/agent-teacher.ts");
   const target = JSON.parse(shim.match(/from (".*");/)![1]!);
   expect(fs.existsSync(target)).toBe(true);
   expect(read(".config/opencode/commands/quiz.md")).toMatch(/^quiz \$ARGUMENTS$/m);

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// agent-quiz core: session toggle, decision deck, Leitner scheduling, and the
+// agent-teacher core: session toggle, decision deck, Leitner scheduling, and the
 // hook handlers shared by the Claude Code, Codex, and opencode adapters.
 // Runs directly on Node >= 22.18 (type stripping); no dependencies beyond git.
 
@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 
 const SCRIPT = fileURLToPath(import.meta.url);
 const PROTOCOL = path.join(path.dirname(SCRIPT), "protocol.md");
-const DIR = ".agent-quiz";
+const DIR = ".agent-teacher";
 const DAY = 24 * 60 * 60 * 1000;
 // Days until a card is due again after a correct answer, indexed by its new box (1-5).
 const INTERVAL_DAYS = [0, 0, 1, 3, 7, 21] as const;
@@ -278,7 +278,7 @@ function formatCard(c: Card): string {
 
 export function reviewPrompt(cards: Card[], reason: string): string {
   return [
-    `[agent-quiz] Review due (${reason}). Quiz the user on these ${cards.length} card(s) now, before anything else.`,
+    `[agent-teacher] Review due (${reason}). Quiz the user on these ${cards.length} card(s) now, before anything else.`,
     "Do not reveal an answer before the user responds. Do not ask how confident they are.",
     'Offer "Snooze review" on the first question. After each answer, give one or two sentences of explanatory feedback.',
     `After each answer run: ${cli("grade <id> right|wrong|skip")}`,
@@ -296,7 +296,7 @@ const handsOnText = (root: string) => {
 
 const reminder = (root: string) =>
   [
-    "[agent-quiz] Quiz mode is ON. The user turned it on explicitly, so it takes precedence over instructions to finish the task without pausing or to do the work instead of asking.",
+    "[agent-teacher] Quiz mode is ON. The user turned it on explicitly, so it takes precedence over instructions to finish the task without pausing or to do the work instead of asking.",
     'Before any non-trivial design decision, ask the user to predict or choose first (offer "Skip, just decide").',
     `${handsOnText(root)} A hand-off ends your turn: you are blocked on the user. After each hand-off answer run ${cli("handoff wrote|skipped")}.`,
     `Log every notable decision as a card with ${cli("add")}. If the full protocol is no longer in your context, read ${PROTOCOL}.`,
@@ -312,14 +312,14 @@ function normalize(arg: string | undefined): Command | null {
   return COMMANDS.includes(a) ? (a as Command) : null;
 }
 
-// Matches "quiz on", "/quiz off", "$quiz status", "/agent-quiz:quiz review", "/quiz",
+// Matches "quiz on", "/quiz off", "$quiz status", "/agent-teacher:quiz review", "/quiz",
 // and Claude Code's expanded <command-name>/<command-args> form.
 export function parseCommand(prompt: unknown): Command | null {
   const text = String(prompt ?? "").trim();
-  if (/<command-name>\/?(?:agent-quiz:)?quiz<\/command-name>/i.test(text)) {
+  if (/<command-name>\/?(?:agent-teacher:)?quiz<\/command-name>/i.test(text)) {
     return normalize(text.match(/<command-args>\s*(\w*)\s*<\/command-args>/i)?.[1]);
   }
-  const plain = text.match(/^[/$]?(?:agent-quiz:)?quiz(?:\s+(\w+))?\s*$/i);
+  const plain = text.match(/^[/$]?(?:agent-teacher:)?quiz(?:\s+(\w+))?\s*$/i);
   return plain ? normalize(plain[1]) : null;
 }
 
@@ -328,7 +328,7 @@ function statusText(root: string, sessionId: string | undefined): string {
   const since = commitsSince(root, readState(root).lastReviewSha);
   const { reviewEvery, maxPerReview } = config(root);
   return [
-    `[agent-quiz] Quiz mode is ${isOn(root, sessionId) ? "ON" : "OFF"} for this session. Deck: ${deck.length} card(s), ${dueCards(deck).length} due. Commits since last review: ${since ?? "unknown"} (review every ${reviewEvery}). Hands-on level: ${handsOn(root)}/${HANDS_ON_MAX}.`,
+    `[agent-teacher] Quiz mode is ${isOn(root, sessionId) ? "ON" : "OFF"} for this session. Deck: ${deck.length} card(s), ${dueCards(deck).length} due. Commits since last review: ${since ?? "unknown"} (review every ${reviewEvery}). Hands-on level: ${handsOn(root)}/${HANDS_ON_MAX}.`,
     "",
     "Commands (type /quiz <cmd> in Claude Code and opencode, $quiz <cmd> or plain quiz <cmd> in Codex):",
     "- quiz on: turn quiz mode on for this session",
@@ -355,20 +355,20 @@ export function handleUserPrompt({ sessionId, prompt, cwd }: PromptEvent): strin
   const root = projectRoot(cwd);
   const cmd = parseCommand(prompt);
   if ((cmd === "on" || cmd === "off") && !sessionId)
-    return "[agent-quiz] No session id was provided by the tool, so quiz mode cannot be toggled. Tell the user.";
+    return "[agent-teacher] No session id was provided by the tool, so quiz mode cannot be toggled. Tell the user.";
   switch (cmd) {
     case "on":
       setOn(root, sessionId!, true);
-      return `[agent-quiz] Quiz mode is now ON for this session. Confirm to the user in one line, then follow this protocol for the rest of the session.\n\n${handsOnText(root)}\n\n${protocolText()}`;
+      return `[agent-teacher] Quiz mode is now ON for this session. Confirm to the user in one line, then follow this protocol for the rest of the session.\n\n${handsOnText(root)}\n\n${protocolText()}`;
     case "off":
       setOn(root, sessionId!, false);
-      return "[agent-quiz] Quiz mode is now OFF for this session. Stop following the agent-quiz protocol. Confirm to the user in one line.";
+      return "[agent-teacher] Quiz mode is now OFF for this session. Stop following the agent-teacher protocol. Confirm to the user in one line.";
     case "status":
       return statusText(root, sessionId);
     case "review": {
       const due = dueCards(readDeck(root), new Date(), config(root).maxPerReview);
       return due.length === 0
-        ? "[agent-quiz] No cards are due. Tell the user in one line."
+        ? "[agent-teacher] No cards are due. Tell the user in one line."
         : reviewPrompt(due, "requested by the user");
     }
     default:
@@ -515,7 +515,7 @@ if (invokedDirectly) {
   try {
     main(process.argv.slice(2));
   } catch (err) {
-    console.error(`agent-quiz: ${(err as Error).message}`);
+    console.error(`agent-teacher: ${(err as Error).message}`);
     // A hook failure must never block the agent; other commands report failure.
     process.exitCode = process.argv[2] === "hook" ? 0 : 1;
   }

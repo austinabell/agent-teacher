@@ -1,9 +1,9 @@
 {
-  "name": "agent-quiz",
-  "displayName": "Agent Quiz",
+  "name": "agent-teacher",
+  "displayName": "Agent Teacher",
   "version": "0.1.0",
-  "description": "Per-session quiz mode: predict design decisions before the agent makes them, then review them with spaced repetition every few commits.",
+  "description": "Per-session teaching mode: predict design decisions before the agent makes them, write core logic yourself, and review decisions with spaced repetition every few commits.",
   "author": { "name": "austinabell" },
   "license": "MIT",
-  "keywords": ["learning", "quiz", "spaced-repetition", "review"]
+  "keywords": ["learning", "teaching", "quiz", "spaced-repetition", "review"]
 }

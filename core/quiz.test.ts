@@ -43,7 +43,7 @@ function commit(n = 1): void {
 }
 
 function tmpDir(): string {
-  return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agent-quiz-")));
+  return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agent-teacher-")));
 }
 
 const card = (over: Partial<Card> = {}): Card => ({
@@ -72,12 +72,12 @@ describe("parseCommand", () => {
     ["quiz on", "on"],
     ["/quiz off", "off"],
     ["$quiz status", "status"],
-    ["/agent-quiz:quiz review", "review"],
+    ["/agent-teacher:quiz review", "review"],
     ["  QUIZ ON  ", "on"],
     ["/quiz", "status"],
     ["quiz", "status"],
     [
-      "<command-name>/agent-quiz:quiz</command-name>\n<command-message>quiz</command-message>\n<command-args>on</command-args>",
+      "<command-name>/agent-teacher:quiz</command-name>\n<command-message>quiz</command-message>\n<command-args>on</command-args>",
       "on",
     ],
     ["<command-name>/quiz</command-name>", "status"],
@@ -137,7 +137,7 @@ describe("addCard", () => {
 
   it("creates a self-ignoring state directory", () => {
     addCard(repo, { question: "q", answer: "a" });
-    expect(fs.readFileSync(path.join(repo, ".agent-quiz", ".gitignore"), "utf8")).toBe("*\n");
+    expect(fs.readFileSync(path.join(repo, ".agent-teacher", ".gitignore"), "utf8")).toBe("*\n");
     expect(git("status", "--porcelain")).toBe("");
   });
 });
@@ -233,9 +233,9 @@ describe("hands-on level", () => {
     ["2", 3],
     [null, 3],
   ])("reads a hand-edited level %j as %i", (stored, expected) => {
-    fs.mkdirSync(path.join(repo, ".agent-quiz"), { recursive: true });
+    fs.mkdirSync(path.join(repo, ".agent-teacher"), { recursive: true });
     fs.writeFileSync(
-      path.join(repo, ".agent-quiz", "state.json"),
+      path.join(repo, ".agent-teacher", "state.json"),
       JSON.stringify({ handsOn: stored }),
     );
     expect(handsOn(repo)).toBe(expected);
@@ -334,15 +334,15 @@ describe("handleUserPrompt", () => {
   });
 
   it("includes usage commands and settings in status", () => {
-    fs.mkdirSync(path.join(repo, ".agent-quiz"), { recursive: true });
+    fs.mkdirSync(path.join(repo, ".agent-teacher"), { recursive: true });
     fs.writeFileSync(
-      path.join(repo, ".agent-quiz", "config.json"),
+      path.join(repo, ".agent-teacher", "config.json"),
       JSON.stringify({ reviewEvery: 2 }),
     );
     const status = prompt("quiz status")!;
     for (const cmd of ["quiz on", "quiz off", "quiz status", "quiz review"])
       expect(status).toContain(cmd);
-    expect(status).toContain(path.join(repo, ".agent-quiz", "config.json"));
+    expect(status).toContain(path.join(repo, ".agent-teacher", "config.json"));
     expect(status).toMatch(/reviewEvery.*currently 2/);
     expect(status).toMatch(/maxPerReview.*currently 5/);
   });
@@ -365,7 +365,7 @@ describe("handleUserPrompt", () => {
 
   it("sanitizes session ids into a single file name", () => {
     prompt("quiz on", "../../evil");
-    expect(fs.readdirSync(path.join(repo, ".agent-quiz", "sessions"))).toEqual([".._.._evil"]);
+    expect(fs.readdirSync(path.join(repo, ".agent-teacher", "sessions"))).toEqual([".._.._evil"]);
   });
 });
 
@@ -423,7 +423,7 @@ describe("handleStop", () => {
     turnOn();
     addCard(repo, { question: "q", answer: "a" });
     fs.writeFileSync(
-      path.join(repo, ".agent-quiz", "state.json"),
+      path.join(repo, ".agent-teacher", "state.json"),
       JSON.stringify({ lastReviewSha: "deadbeef".repeat(5) }),
     );
     commit(3);
@@ -434,7 +434,7 @@ describe("handleStop", () => {
   it("honors reviewEvery and maxPerReview from config.json", () => {
     turnOn();
     fs.writeFileSync(
-      path.join(repo, ".agent-quiz", "config.json"),
+      path.join(repo, ".agent-teacher", "config.json"),
       JSON.stringify({ reviewEvery: 1, maxPerReview: 1 }),
     );
     expect(config(repo)).toEqual({ reviewEvery: 1, maxPerReview: 1 });
@@ -508,7 +508,7 @@ describe("CLI", () => {
     const r = cli(["hook", "user-prompt"], "{not json");
     expect(r.status).toBe(0);
     expect(r.stdout).toBe("");
-    expect(r.stderr).toMatch(/agent-quiz:/);
+    expect(r.stderr).toMatch(/agent-teacher:/);
   });
 
   it("adds, grades, and lists cards", () => {
