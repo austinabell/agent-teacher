@@ -1,4 +1,4 @@
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -16,12 +16,14 @@ import {
   handsOn,
   isOn,
   markReviewed,
+  nextCard,
   parseCommand,
   protocolText,
   readDeck,
   readState,
   retire,
   sessionFeatures,
+  workerBrief,
 } from "./teach.ts";
 
 const SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), "teach.ts");
@@ -286,6 +288,162 @@ describe("dueCards", () => {
     expect(dueCards(deck, now).map((c) => c.id)).toEqual(["box1-old", "box1-new", "box2", "exact"]);
     expect(dueCards(deck, now, 2).map((c) => c.id)).toEqual(["box1-old", "box1-new"]);
     expect(dueCards([], now)).toEqual([]);
+  });
+});
+
+describe("nextCard", () => {
+  const now = new Date("2026-06-01T12:00:00Z");
+  const ago = (ms: number) => new Date(now.getTime() - ms).toISOString();
+  const HOUR = 60 * 60 * 1000;
+  const graded = (at: string) => [{ at, result: "wrong" as const }];
+
+  it("returns nothing for an empty deck", () => {
+    expect(nextCard([], now)).toBeUndefined();
+  });
+
+  it("skips retired and not-yet-due cards", () => {
+    const deck = [
+      card({ id: "retired", retired: true }),
+      card({ id: "future", due: "2026-07-01T00:00:00Z" }),
+    ];
+    expect(nextCard(deck, now)).toBeUndefined();
+  });
+
+  it("serves the newest unseen card first, ahead of a lower-box older card", () => {
+    const deck = [
+      card({ id: "seen", history: graded(ago(2 * HOUR)) }),
+      card({ id: "old", box: 2, created: ago(5 * HOUR) }),
+      card({ id: "new", box: 2, created: ago(HOUR) }),
+    ];
+    expect(nextCard(deck, now)?.id).toBe("new");
+  });
+
+  it("falls back to the due order once every due card has been seen", () => {
+    const deck = [
+      card({ id: "box2", box: 2, history: graded(ago(2 * HOUR)) }),
+      card({ id: "box1", history: graded(ago(2 * HOUR)) }),
+    ];
+    expect(nextCard(deck, now)?.id).toBe("box1");
+  });
+
+  it("holds back a card graded under an hour ago, and only that long", () => {
+    expect(nextCard([card({ history: graded(ago(HOUR - 1)) })], now)).toBeUndefined();
+    expect(nextCard([card({ history: graded(ago(HOUR)) })], now)?.id).toBe("1");
+  });
+
+  it("does not re-ask a card graded wrong or skipped just now", () => {
+    addCard(repo, { question: "q", answer: "a" }, now);
+    expect(nextCard(readDeck(repo), now)?.id).toBe("1");
+    grade(repo, "1", "wrong", now);
+    expect(nextCard(readDeck(repo), now)).toBeUndefined();
+    addCard(repo, { question: "q2", answer: "a" }, now);
+    grade(repo, "2", "skip", now);
+    expect(nextCard(readDeck(repo), now)).toBeUndefined();
+  });
+});
+
+describe("deck lock", () => {
+  const lock = () => path.join(repo, ".agent-teacher", "deck.json.lock");
+
+  it("keeps every card when processes add at the same time", async () => {
+    const count = 20;
+    await Promise.all(
+      Array.from(
+        { length: count },
+        (_, i) =>
+          new Promise<void>((resolve, reject) => {
+            const child = spawn("node", [SCRIPT, "add"], { cwd: repo, stdio: "pipe" });
+            child.on("error", reject);
+            child.on("close", (code) =>
+              code === 0 ? resolve() : reject(new Error(`add exited ${code}`)),
+            );
+            child.stdin.end(JSON.stringify({ question: `q${i}`, answer: "a" }));
+          }),
+      ),
+    );
+    const deck = readDeck(repo);
+    expect(deck).toHaveLength(count);
+    expect(new Set(deck.map((c) => c.id)).size).toBe(count);
+  }, 20_000);
+
+  it("removes a stale lock and carries on", () => {
+    addCard(repo, { question: "q", answer: "a" });
+    fs.writeFileSync(lock(), "");
+    const old = new Date(Date.now() - 60_000);
+    fs.utimesSync(lock(), old, old);
+    expect(addCard(repo, { question: "q2", answer: "a" }).id).toBe("2");
+    expect(fs.existsSync(lock())).toBe(false);
+  });
+
+  it("gives up with an error on a lock that is still held", () => {
+    addCard(repo, { question: "q", answer: "a" });
+    fs.writeFileSync(lock(), "");
+    expect(() => addCard(repo, { question: "q2", answer: "a" })).toThrow(/deck lock/);
+    expect(() => grade(repo, "1", "right")).toThrow(/deck lock/);
+    expect(() => retire(repo, "1")).toThrow(/deck lock/);
+    fs.rmSync(lock());
+    expect(readDeck(repo)).toHaveLength(1);
+    expect(readDeck(repo)[0]!.history).toEqual([]);
+  }, 20_000);
+
+  it("releases the lock when the change fails", () => {
+    expect(() => grade(repo, "99", "right")).toThrow(/no card/);
+    expect(fs.existsSync(lock())).toBe(false);
+    expect(() => retire(repo, "99")).toThrow(/no card/);
+    expect(fs.existsSync(lock())).toBe(false);
+  });
+});
+
+describe("workerBrief", () => {
+  it("fills in the CLI and strips every feature block", () => {
+    for (const features of [["quiz"], ["write"], ["quiz", "write"]] as const) {
+      const text = workerBrief(repo, features);
+      expect(text).not.toMatch(/<!--|\{\{CLI\}\}|\n\n\n/);
+      expect(text).toMatch(/DECISION NEEDED/);
+    }
+  });
+
+  it("includes card logging only with quiz, and hand-offs only with write", () => {
+    const quiz = workerBrief(repo, ["quiz"]);
+    expect(quiz).toContain(`node "${SCRIPT}" add`);
+    expect(quiz).not.toMatch(/HAND-OFF|Hands-on level/);
+    const write = workerBrief(repo, ["write"]);
+    expect(write).toMatch(/HAND-OFF/);
+    expect(write).toMatch(/Hands-on level 3\/4/);
+    expect(write).not.toContain(`node "${SCRIPT}" add`);
+  });
+
+  it("uses the project's current hands-on level", () => {
+    adjustHandsOn(repo, "skipped");
+    expect(workerBrief(repo, ["quiz", "write"])).toMatch(/Hands-on level 2\/4/);
+  });
+});
+
+describe("quizzing during the work", () => {
+  const prompt = (p: string) => handleUserPrompt({ sessionId: "s1", prompt: p, cwd: repo });
+
+  it("is described in the protocol with quiz on, and not with write alone", () => {
+    expect(protocolText(["quiz"])).toMatch(/## Quiz during the work/);
+    expect(protocolText(["quiz"])).toContain(`node "${SCRIPT}" next`);
+    expect(protocolText(["quiz"])).not.toMatch(/Hand-offs from a worker|HAND-OFF/);
+    expect(protocolText(["quiz", "write"])).toMatch(/HAND-OFF/);
+    expect(protocolText(["write"])).not.toMatch(/Quiz during the work|DECISION NEEDED/);
+    expect(protocolText([])).not.toMatch(/Quiz during the work/);
+  });
+
+  it.each([
+    ["teach quiz", "worker-brief quiz"],
+    ["teach on", "worker-brief quiz,write"],
+  ])("%s reminds with the exact brief command", (toggle, expected) => {
+    prompt(toggle);
+    const reminder = prompt("fix the bug")!;
+    expect(reminder).toContain(`node "${SCRIPT}" ${expected}`);
+    expect(reminder).toContain(`node "${SCRIPT}" next`);
+  });
+
+  it("is not in the reminder for write mode", () => {
+    prompt("teach write");
+    expect(prompt("fix the bug")).not.toMatch(/worker-brief|background/);
   });
 });
 
@@ -604,6 +762,38 @@ describe("CLI", () => {
     expect(cli(["due"]).stdout).toMatch(/nothing due/);
     expect(cli(["reviewed"]).status).toBe(0);
   });
+
+  it("serves one card at a time from next", () => {
+    expect(cli(["next"]).stdout).toMatch(/nothing to ask/);
+    cli(["add"], JSON.stringify({ question: "older", answer: "a" }));
+    cli(["add"], JSON.stringify({ question: "newer", answer: "a" }));
+    const first = cli(["next"]);
+    expect(first.status).toBe(0);
+    expect(first.stdout).toMatch(/newer/);
+    expect(first.stdout.match(/^- id /gm)).toHaveLength(1);
+    expect(first.stdout).toMatch(/answer: a/);
+    cli(["grade", "1", "skip"]);
+    cli(["grade", "2", "skip"]);
+    expect(cli(["next"]).stdout).toMatch(/nothing to ask/);
+  });
+
+  it("prints the worker brief for the given features", () => {
+    const r = cli(["worker-brief", "quiz,write"]);
+    expect(r.status).toBe(0);
+    expect(r.stdout).toMatch(/DECISION NEEDED/);
+    expect(r.stdout).toMatch(/HAND-OFF/);
+    expect(cli(["worker-brief", "quiz"]).stdout).not.toMatch(/HAND-OFF/);
+  });
+
+  it.each([[[]], [[""]], [["bogus"]], [["quiz,bogus"]], [["quiz,"]]])(
+    "rejects worker-brief with arguments %j",
+    (args) => {
+      const r = cli(["worker-brief", ...args]);
+      expect(r.status).toBe(1);
+      expect(r.stderr).toMatch(/usage: worker-brief/);
+      expect(r.stdout).toBe("");
+    },
+  );
 
   it("records hand-off answers", () => {
     expect(cli(["handoff", "skipped"]).stdout).toMatch(/hands-on level 2\/4/);

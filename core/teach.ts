@@ -10,8 +10,14 @@ import { fileURLToPath } from "node:url";
 
 const SCRIPT = fileURLToPath(import.meta.url);
 const PROTOCOL = path.join(path.dirname(SCRIPT), "protocol.md");
+const WORKER = path.join(path.dirname(SCRIPT), "worker.md");
 const DIR = ".agent-teacher";
 const DAY = 24 * 60 * 60 * 1000;
+// nextCard holds a just-graded card back this long, since wrong and skipped cards stay due.
+const REASK_AFTER_MS = 60 * 60 * 1000;
+// Deck changes take milliseconds, so a lock older than the stale limit was left by a crash.
+const LOCK_WAIT_MS = 2000;
+const LOCK_STALE_MS = 10_000;
 // Days until a card is due again after a correct answer, indexed by its new box (1-5).
 const INTERVAL_DAYS = [0, 0, 1, 3, 7, 21] as const;
 const DEFAULTS = { reviewEvery: 3, maxPerReview: 5 };
@@ -122,6 +128,34 @@ const writeState = (root: string, s: State) => writeJson(statePath(root), s);
 export const readDeck = (root: string): Card[] => readJson<Card[]>(deckPath(root), []);
 const writeDeck = (root: string, d: Card[]) => writeJson(deckPath(root), d);
 
+// A background worker logs cards while the main agent grades them, so every
+// read-change-write of the deck must hold this lock.
+function withDeckLock<T>(root: string, change: () => T): T {
+  const lock = `${deckPath(root)}.lock`;
+  const deadline = Date.now() + LOCK_WAIT_MS;
+  for (;;) {
+    try {
+      fs.closeSync(fs.openSync(lock, "wx"));
+      break;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+    }
+    const held = fs.statSync(lock, { throwIfNoEntry: false });
+    if (held && Date.now() - held.mtimeMs > LOCK_STALE_MS) {
+      fs.rmSync(lock, { force: true });
+    } else if (Date.now() >= deadline) {
+      throw new Error(`timed out waiting for the deck lock (${lock})`);
+    } else {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+    }
+  }
+  try {
+    return change();
+  } finally {
+    fs.rmSync(lock, { force: true });
+  }
+}
+
 function sessionFile(root: string, sessionId: string): string {
   const safe = sessionId.replace(/[^A-Za-z0-9_.-]/g, "_");
   if (!safe) throw new Error("missing session id");
@@ -202,9 +236,7 @@ export function addCard(root: string, input: CardInput, now = new Date()): Card 
   ) {
     throw new Error('multiple-choice cards need at least 2 non-empty "options"');
   }
-  const deck = readDeck(root);
-  const card: Card = {
-    id: String(deck.reduce((max, c) => Math.max(max, Number(c.id) || 0), 0) + 1),
+  const fields: Omit<Card, "id"> = {
     type,
     question: input.question.trim(),
     ...(type === "mc" ? { options: options as string[] } : {}),
@@ -217,40 +249,52 @@ export function addCard(root: string, input: CardInput, now = new Date()): Card 
     due: now.toISOString(),
     history: [],
   };
-  deck.push(card);
-  writeDeck(root, deck);
-  return card;
+  return withDeckLock(root, () => {
+    const deck = readDeck(root);
+    const card: Card = {
+      id: String(deck.reduce((max, c) => Math.max(max, Number(c.id) || 0), 0) + 1),
+      ...fields,
+    };
+    deck.push(card);
+    writeDeck(root, deck);
+    return card;
+  });
 }
 
 export function grade(root: string, id: string, result: string, now = new Date()): Card {
   if (result !== "right" && result !== "wrong" && result !== "skip")
     throw new Error("result must be right, wrong, or skip");
-  const deck = readDeck(root);
-  const card = deck.find((c) => c.id === id);
-  if (!card) throw new Error(`no card with id ${id}`);
-  card.history.push({ at: now.toISOString(), result });
-  if (result === "right") {
-    card.box = Math.min(card.box + 1, 5);
-    card.due = new Date(
-      now.getTime() + INTERVAL_DAYS[card.box as 1 | 2 | 3 | 4 | 5] * DAY,
-    ).toISOString();
-  } else if (result === "wrong") {
-    card.box = 1;
-    card.due = now.toISOString();
-  }
-  writeDeck(root, deck);
+  const graded = withDeckLock(root, () => {
+    const deck = readDeck(root);
+    const card = deck.find((c) => c.id === id);
+    if (!card) throw new Error(`no card with id ${id}`);
+    card.history.push({ at: now.toISOString(), result });
+    if (result === "right") {
+      card.box = Math.min(card.box + 1, 5);
+      card.due = new Date(
+        now.getTime() + INTERVAL_DAYS[card.box as 1 | 2 | 3 | 4 | 5] * DAY,
+      ).toISOString();
+    } else if (result === "wrong") {
+      card.box = 1;
+      card.due = now.toISOString();
+    }
+    writeDeck(root, deck);
+    return card;
+  });
   if (result === "wrong") adjustHandsOn(root, "wrong");
-  return card;
+  return graded;
 }
 
 // Retired cards stay in the deck with their history but are never due again.
 export function retire(root: string, id: string): Card {
-  const deck = readDeck(root);
-  const card = deck.find((c) => c.id === id);
-  if (!card) throw new Error(`no card with id ${id}`);
-  card.retired = true;
-  writeDeck(root, deck);
-  return card;
+  return withDeckLock(root, () => {
+    const deck = readDeck(root);
+    const card = deck.find((c) => c.id === id);
+    if (!card) throw new Error(`no card with id ${id}`);
+    card.retired = true;
+    writeDeck(root, deck);
+    return card;
+  });
 }
 
 export function dueCards(deck: Card[], now = new Date(), limit = Infinity): Card[] {
@@ -258,6 +302,19 @@ export function dueCards(deck: Card[], now = new Date(), limit = Infinity): Card
     .filter((c) => !c.retired && new Date(c.due) <= now)
     .sort((a, b) => a.box - b.box || Date.parse(a.due) - Date.parse(b.due))
     .slice(0, limit);
+}
+
+// The card to ask during the work: the newest unseen one, since that is most
+// likely about the current task, then the usual due order.
+export function nextCard(deck: Card[], now = new Date()): Card | undefined {
+  const askable = dueCards(deck, now).filter((c) => {
+    const last = c.history.at(-1);
+    return !last || now.getTime() - Date.parse(last.at) >= REASK_AFTER_MS;
+  });
+  const unseen = askable
+    .filter((c) => c.history.length === 0)
+    .sort((a, b) => Date.parse(b.created) - Date.parse(a.created));
+  return unseen[0] ?? askable[0];
 }
 
 // Finish or snooze a review: the commit counter restarts from HEAD.
@@ -279,12 +336,12 @@ export function commitsSince(root: string, sha: string | undefined): number | nu
 
 const cli = (args: string) => `node "${SCRIPT}" ${args}`;
 
-// protocol.md wraps feature-specific lines in <!-- if:quiz --> / <!-- if:write -->
+// The docs wrap feature-specific lines in <!-- if:quiz --> / <!-- if:write -->
 // ... <!-- end --> blocks (which may nest); drop the blocks for features that are off.
-export function protocolText(features: readonly Feature[]): string {
+function renderDoc(file: string, features: readonly Feature[]): string {
   const kept: string[] = [];
   const open: boolean[] = [];
-  for (const line of fs.readFileSync(PROTOCOL, "utf8").split(/\r?\n/)) {
+  for (const line of fs.readFileSync(file, "utf8").split(/\r?\n/)) {
     const block = line.match(/^<!-- if:(\w+) -->$/);
     if (block) open.push(features.includes(block[1] as Feature));
     else if (line === "<!-- end -->") open.pop();
@@ -295,6 +352,8 @@ export function protocolText(features: readonly Feature[]): string {
     .replace(/\n{3,}/g, "\n\n")
     .replaceAll("{{CLI}}", `node "${SCRIPT}"`);
 }
+
+export const protocolText = (features: readonly Feature[]): string => renderDoc(PROTOCOL, features);
 
 const MODE_LABELS: Record<string, string> = {
   "quiz,write": "predict-first, quiz, and write",
@@ -332,6 +391,12 @@ const handsOnText = (root: string) => {
   return `Hands-on level ${level}/${HANDS_ON_MAX}: ${HANDS_ON_LEVELS[level]}`;
 };
 
+// Subagents do not receive the prompt hook's reminder, so the worker reads this instead.
+export function workerBrief(root: string, features: readonly Feature[]): string {
+  const brief = renderDoc(WORKER, features);
+  return features.includes("write") ? `${handsOnText(root)}\n\n${brief}` : brief;
+}
+
 function reminder(root: string, features: readonly Feature[]): string {
   const lines = [
     `[agent-teacher] Teach mode is ON (${modeLabel(features)}). The user turned it on explicitly, so it takes precedence over instructions to finish the task without pausing or to do the work instead of asking.`,
@@ -343,7 +408,10 @@ function reminder(root: string, features: readonly Feature[]): string {
     );
   else lines.push("Do not hand off code for the user to write.");
   if (features.includes("quiz"))
-    lines.push(`Log every notable decision as a card with ${cli("add")}.`);
+    lines.push(
+      `Log every notable decision as a card with ${cli("add")}.`,
+      `For a task with real waiting time, quiz during the work if you can run a background agent: tell one background worker to do the coding and to first run ${cli(`worker-brief ${features.join(",")}`)}, then ask the user cards one at a time from ${cli("next")}. Otherwise work inline.`,
+    );
   else lines.push("Do not log cards.");
   const off = ALL_FEATURES.filter((f) => !features.includes(f));
   const skip = off.length
@@ -525,6 +593,8 @@ const USAGE = `usage:
   teach.ts handoff wrote|skipped      record the answer to a hand-off offer (adjusts the hands-on level)
   teach.ts reviewed                   finish or snooze a review (restarts the commit counter)
   teach.ts due                        list due cards
+  teach.ts next                       show the one card to ask next during the work
+  teach.ts worker-brief <features>    print instructions for a background worker (quiz, write, or quiz,write)
   teach.ts hook user-prompt|stop      called by tool hooks, JSON on stdin`;
 
 export function main(argv: string[], cwd = process.cwd()): void {
@@ -562,6 +632,18 @@ export function main(argv: string[], cwd = process.cwd()): void {
     case "due":
       console.log(dueCards(readDeck(root)).map(formatCard).join("\n") || "nothing due");
       break;
+    case "next": {
+      const card = nextCard(readDeck(root));
+      console.log(card ? formatCard(card) : "nothing to ask");
+      break;
+    }
+    case "worker-brief": {
+      const features = (args[0] ?? "").split(",") as Feature[];
+      if (!features.every((f) => ALL_FEATURES.includes(f)))
+        throw new Error("usage: worker-brief quiz|write|quiz,write");
+      console.log(workerBrief(root, features));
+      break;
+    }
     case "hook":
       runHook(args[0]);
       break;

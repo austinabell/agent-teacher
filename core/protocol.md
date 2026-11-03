@@ -88,4 +88,27 @@ EOF
 ## Reviews
 
 When a hook message says a review is due, quiz the user on the listed cards before other work. Follow the rules in that message, and grade each card with `{{CLI}} grade <id> right|wrong|skip`. After a wrong answer, ask whether to keep the card (yes/no, default yes); only an explicit no retires it with `{{CLI}} retire <id>`. Judge short answers on substance, not wording. Run `{{CLI}} reviewed` when done or snoozed.
+
+## Quiz during the work
+
+The user should spend the agent's working time on questions about this problem, instead of waiting or starting something else. When a task involves more than a few edits and you can run a background agent (the Agent tool in Claude Code), split the work:
+
+1. Ask the predict-first questions you can already identify. Log 1-3 cards from your plan, so there is something to ask right away.
+2. Start one background worker. Tell it the task, and to first run the `worker-brief` command from your teach-mode reminder and follow its output. Do not edit files while it runs.
+3. Run `{{CLI}} next` and ask the user that one card, following the review rules above. Do not reveal the answer first, and offer "Snooze review" on the first question. Grade it, then repeat.
+4. When `next` prints "nothing to ask" or the user snoozes, run `{{CLI}} reviewed` and end your turn. The worker's notification wakes you.
+
+When the worker stops:
+
+- **`DECISION NEEDED`:** ask the user right away, using the predict-first rules. Do not reveal the worker's pick until they answer. Then resume the worker with the choice (SendMessage in Claude Code). If you cannot resume it, start a new worker with the brief, the choice, and what is already done. Then return to step 3.
+
+<!-- if:write -->
+
+- **`HAND-OFF`:** make the offer using the hand-off rules. The worker has prepared the stub. Resume the worker once the user has written the code and you have reviewed it, or as soon as they choose "Skip, you write it".
+
+<!-- end -->
+
+- **Finished:** report the result right away, even if cards remain. They stay due for the next review.
+
+If you cannot run a background agent, or the task is only a few edits, work inline as the rest of this protocol describes.
 <!-- end -->

@@ -1,12 +1,14 @@
 # agent-teacher
 
 A teaching mode for coding agents, so you actually know the decisions your agent made.
-It is off by default and you turn it on per session. It has three parts:
+It is off by default and you turn it on per session. It has these parts:
 
 1. **Predict first (always on).** Before a non-trivial design decision, the agent asks you to pick an option, then reveals its choice and the reason.
 2. **Quiz: decision cards (`/teach quiz`).** The agent logs every notable decision as a quiz card, including the ones it did not ask you about.
 3. **Write: write it yourself (`/teach write`).** The agent stubs core logic (functions with real decisions in them: algorithms, parsing, business rules, failure paths) with a `TODO` and pauses for you to write it, one component at a time. It writes the glue and boilerplate itself, then reviews your code and runs the tests. How much it hands off depends on a hands-on level from 0 to 4, starting at 3. The idea comes from Anthropic's [learning-output-style](https://github.com/anthropics/claude-code/tree/main/plugins/learning-output-style) plugin.
 4. **Quiz: review every few commits.** After 3 commits (yours or the agent's), the agent quizzes you on the cards that are due. Cards come back on a spaced-repetition schedule.
+
+5. **Quiz: during the work.** When quiz is on and the task takes more than a few edits, the agent sends the coding to a background worker and quizzes you while it runs, so you can stay on one problem instead of waiting or starting another. Questions about the current task come first, then due cards. Design decisions still pause the work until you answer.
 
 `/teach on` turns on all of it. `/teach quiz` and `/teach write` turn on predict-first plus only that part, so you can do the quizzes without the hand-offs, or the reverse.
 
@@ -31,7 +33,7 @@ The problem: when an agent writes the code, it is easy to skim its output and mi
 ### Goals
 
 - You can explain every important decision in the code your agent wrote: what was chosen, and why.
-- Getting there costs as little attention as possible: short questions at natural break points, and nothing while teach mode is off.
+- Getting there costs as little attention as possible: short questions while the agent is working or at natural break points, and nothing while teach mode is off.
 - It never blocks you. Every question can be skipped, and skipping never loses a card.
 - Your own commits count toward the review threshold. The commit count comes from git, not from watching the agent's commands.
 
@@ -85,6 +87,8 @@ This writes a plugin to `~/.config/opencode/plugins/agent-teacher.ts`, adds a `/
 ## How it works
 
 - **Hooks.** On every prompt, a `UserPromptSubmit` hook (`chat.message` in opencode) applies any toggle command. While teach mode is on, it adds a short reminder of the protocol in `core/protocol.md`, limited to the parts that are on. When the agent finishes a turn, a `Stop` hook (`session.idle` in opencode) checks the commit count. Once 3 commits have been made since the last review and at least one card is due, it starts a review. This only happens when quiz is on.
+- **Background worker.** Subagents do not receive the prompt hook's reminder, so the worker runs `node core/teach.ts worker-brief <features>` (from `core/worker.md`) for its instructions. It logs cards as it decides and stops with `DECISION NEEDED` or `HAND-OFF` when the user has to act. The main agent resumes it with the answer.
+- **Asking during the work.** The main agent gets one card at a time from `node core/teach.ts next`: the newest unseen card first, then the usual due order. A card graded in the last hour is held back, so a wrong or skipped card is not asked again immediately. A lock file (`deck.json.lock`) keeps the worker's new cards from overwriting the main agent's grades.
 - **Cards.** Each card is multiple choice or short answer, and records the commit where the decision was made. The agent adds cards with `node core/teach.ts add`.
 - **Schedule.** A Leitner box system. A right answer moves the card up one box. Box 1 is due right away, then the intervals are 1, 3, 7 and 21 days. A wrong answer sends the card back to box 1, and a skipped card stays where it is. A review shows at most 5 cards, starting with the lowest box.
 - **No loops.** A review is offered at most once per HEAD commit, and never while a stop hook is already active.
@@ -103,6 +107,8 @@ Everything is stored in `.agent-teacher/` at the repository root. That directory
 ## Limitations
 
 - **Predict-first depends on the agent's judgment.** The agent decides which decisions are non-trivial, which code is worth handing off, and which cards to log. The hooks only remind it of the rules.
+- **Quizzing during the work has not been run end to end.** It depends on the worker continuing while a question is open, and on the worker's notification arriving afterward. The unit tests cover the card selection, the lock, and the brief, not this behavior. It also depends on the agent choosing to use a worker.
+- **Quizzing during the work costs more and has limits.** Two agents use more tokens than one. Without a background agent facility the agent works inline, as it did before. Avoid editing the same files as the worker while it runs.
 - **opencode 2.x is not supported yet.** The adapter uses the opencode 1.x plugin API and has unit tests for it. opencode 2.0.15 loads the plugin without errors but never calls its hooks. 2.x has a new plugin API with no published types yet (the npm `latest` of `@opencode-ai/plugin` is 1.18.35). Not tested against a live opencode 1.x install.
 - **Codex has not been run end to end.** Its hooks use the same JSON input and output as Claude Code, and that format is unit tested. Claude Code has been verified end to end.
 - **The evidence is about learning in general, not this tool.** The Anthropic study measured comprehension right after the task. Whether spaced quizzing on agent decisions improves long-term understanding has not been measured.
